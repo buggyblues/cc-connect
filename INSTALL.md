@@ -143,7 +143,7 @@ level = "info"  # debug, info, warn, error
 name = "my-project"
 
 [projects.agent]
-type = "claudecode"  # or "codex", "cursor", "gemini", "qoder", "opencode", "iflow"
+type = "claudecode"  # or "codex", "cursor", "gemini", "qoder", "opencode", "iflow", "orbit"
 
 [projects.agent.options]
 work_dir = "/absolute/path/to/your/project"

@@ -603,6 +603,39 @@ level = "info" # debug, info, warn, error
 # app_token = "xapp-..."
 
 # =============================================================================
+# Orbit External Gateway / Orbit 外部网关
+# =============================================================================
+# Use Orbit as the domain/orchestration layer while cc-connect handles IM
+# transports. Orbit must be running with External Gateway enabled; by default the
+# socket is resolved from work_dir as <vault>/.orbit/external-gateway.sock.
+# 使用 Orbit 作为领域编排层，由 cc-connect 负责 IM 平台传输。需要先启动 Orbit
+# 并启用 External Gateway；默认 socket 路径为 work_dir 下的
+# <vault>/.orbit/external-gateway.sock。
+#
+# [[projects]]
+# name = "orbit"
+# inject_sender = true  # pass exact platform/user metadata to Orbit / 传递平台和用户信息给 Orbit
+#
+# [projects.agent]
+# type = "orbit"
+#
+# [projects.agent.options]
+# work_dir = "/Users/you/OrbitVault"
+# socket_path = "/Users/you/OrbitVault/.orbit/external-gateway.sock"
+# fallback_agent = "claudecode"       # optional fallback when Orbit is unavailable / Orbit 不可用时的兜底
+# auto_reconnect = true
+# heartbeat_seconds = 30
+# throttle_delta_ms = 500
+#
+# [projects.agent.options.delegate_options]
+# mode = "default"
+#
+# [[projects.platforms]]
+# type = "telegram"
+# [projects.platforms.options]
+# token = "${TELEGRAM_BOT_TOKEN}"
+
+# =============================================================================
 # Project 1 / 项目 1
 # =============================================================================
 
