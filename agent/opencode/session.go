@@ -130,6 +130,9 @@ func (s *opencodeSession) stageImages(prompt string, images []core.ImageAttachme
 	if prompt == "" {
 		prompt = "Please analyze the attached image(s)."
 	}
+	prompt += fmt.Sprintf("\n\n(Image%s attached, saved locally: %s)",
+		map[bool]string{true: "s", false: ""}[len(imagePaths) > 1],
+		strings.Join(imagePaths, ", "))
 
 	return prompt, imagePaths, nil
 }

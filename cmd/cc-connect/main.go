@@ -1275,7 +1275,7 @@ type = "feishu"
 app_id = "your-feishu-app-id"
 app_secret = "your-feishu-app-secret"
 
-# For more platforms (DingTalk, Telegram, Slack, Discord, LINE, WeChat Work)
+# For more platforms (DingTalk, Telegram, Slack, Discord, LINE, WeChat Work, ShadowOB)
 # see: https://github.com/chenhg5/cc-connect/blob/main/config.example.toml
 `
 	return os.WriteFile(path, []byte(tmpl), 0o644)
@@ -1299,7 +1299,7 @@ func printUsage() {
 
   Bridge your messaging platforms to local AI coding agents.
   Supports: Claude Code, Codex, Cursor, Gemini CLI, Qoder CLI, OpenCode
-  Platforms: Feishu, Telegram, Slack, DingTalk, Discord, LINE, WeChat Work, Weixin, QQ, QQ Bot
+  Platforms: Feishu, Telegram, Slack, DingTalk, Discord, LINE, WeChat Work, Weixin, QQ, QQ Bot, ShadowOB
 
   GitHub:  https://github.com/chenhg5/cc-connect
   Docs:    https://github.com/chenhg5/cc-connect/blob/main/INSTALL.md

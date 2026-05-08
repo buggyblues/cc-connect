@@ -987,6 +987,26 @@ app_secret = "your-feishu-app-secret"
 # webhook_path   = "/webhook"          # default; must match the path in webhook_url
 # webhook_secret = "long-random-string"  # optional; checked via X-Webhook-Secret header or ?s= query
 
+# ShadowOB / Shadow (uncomment to enable / 取消注释以启用)
+# Create a Shadow Buddy, bind it to the target server/channel in Shadow, generate
+# its token, then put the token below. Server/channel routing is dynamically read
+# from the Buddy policy; no channel IDs are needed in cc-connect config.
+# 在 Shadow 中创建 Buddy，绑定到目标服务器/频道，生成 token 后填到这里。
+# 服务器和频道由 Shadow 的 Buddy policy 动态下发；cc-connect 不需要配置 channel ID。
+#
+# [[projects.platforms]]
+# type = "shadowob"
+#
+# [projects.platforms.options]
+# token = "${SHADOWOB_AGENT_TOKEN}"      # Buddy token / Buddy token
+# # server_url = "https://shadowob.com"  # Default / 默认值
+# allow_from = "*"                       # Allowed Shadow user IDs or usernames / 允许的 Shadow 用户 ID 或用户名
+# listen_dms = true
+# share_session_in_channel = false       # If true, all users in a Shadow channel share one agent session / 频道共享会话
+# progress_style = "compact"             # legacy | compact; compact enables message update previews / compact 会编辑预览消息
+# media_max_bytes = 20971520             # Max inbound media download size / 入站媒体下载大小上限
+# # slash_commands_path = "${SHADOW_SLASH_COMMANDS_PATH}"
+
 # Slack (uncomment to enable / 取消注释以启用)
 # 1. Create an app at https://api.slack.com/apps / 创建应用
 # 2. Enable Socket Mode (Settings > Socket Mode) / 开启 Socket Mode

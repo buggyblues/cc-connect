@@ -1459,6 +1459,8 @@ func (e *Engine) ExecuteHeartbeat(sessionKey, prompt string, silent bool) error 
 }
 
 func (e *Engine) Start() error {
+	e.ensureAgentInstructions()
+
 	var startErrs []error
 	readyCount := 0
 	pendingCount := 0
@@ -1500,6 +1502,18 @@ func (e *Engine) Start() error {
 
 	e.startObserver()
 	return nil
+}
+
+func (e *Engine) ensureAgentInstructions() {
+	result, baseName, err := e.setupMemoryFile()
+	switch result {
+	case setupOK:
+		slog.Info("cc-connect instructions written", "project", e.name, "file", baseName)
+	case setupExists, setupNative, setupNoMemory:
+		return
+	case setupError:
+		slog.Warn("cc-connect instructions setup failed", "project", e.name, "file", baseName, "error", err)
+	}
 }
 
 func (e *Engine) Stop() error {
@@ -3278,23 +3292,23 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				if autoApprove {
 					result = PermissionResult{Behavior: "allow", UpdatedInput: event.ToolInputRaw}
 				}
-			reqID := event.RequestID
-			respondCtx := ctx // capture current unsolicited reader context
-			go func() {
-				// Run in a goroutine to keep reader iterations fast, but honour
-				// the reader's context so we don't call into a dead session after
-				// stopUnsolicitedReader cancels the context.
-				select {
-				case <-respondCtx.Done():
-					return
-				default:
-				}
-				if err := agentSession.RespondPermission(reqID, result); err != nil {
-					if respondCtx.Err() == nil {
-						slog.Error("unsolicited: failed to respond permission", "error", err)
+				reqID := event.RequestID
+				respondCtx := ctx // capture current unsolicited reader context
+				go func() {
+					// Run in a goroutine to keep reader iterations fast, but honour
+					// the reader's context so we don't call into a dead session after
+					// stopUnsolicitedReader cancels the context.
+					select {
+					case <-respondCtx.Done():
+						return
+					default:
 					}
-				}
-			}()
+					if err := agentSession.RespondPermission(reqID, result); err != nil {
+						if respondCtx.Err() == nil {
+							slog.Error("unsolicited: failed to respond permission", "error", err)
+						}
+					}
+				}()
 				if !autoApprove {
 					toolName := event.ToolName
 					if toolName == "" {

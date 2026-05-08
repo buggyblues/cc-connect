@@ -250,8 +250,8 @@ const (
 	MsgCronBtnUnmute    MsgKey = "cron_btn_unmute"
 	MsgCronBtnDelete    MsgKey = "cron_btn_delete"
 
-	MsgStatusTitle          MsgKey = "status_title"
-	MsgReplyFooterRemaining MsgKey = "reply_footer_remaining"
+	MsgStatusTitle           MsgKey = "status_title"
+	MsgReplyFooterRemaining  MsgKey = "reply_footer_remaining"
 	MsgModelCurrent          MsgKey = "model_current"
 	MsgModelChanged          MsgKey = "model_changed"
 	MsgModelChangeFailed     MsgKey = "model_change_failed"
@@ -443,10 +443,10 @@ const (
 	MsgCommandDisabled   MsgKey = "command_disabled"
 	MsgAdminRequired     MsgKey = "admin_required"
 	MsgRateLimited       MsgKey = "rate_limited"
-	MsgPsSent       MsgKey = "ps_sent"
-	MsgPsSendFailed MsgKey = "ps_send_failed"
-	MsgPsEmpty      MsgKey = "ps_empty"
-	MsgPsNoSession  MsgKey = "ps_no_session"
+	MsgPsSent            MsgKey = "ps_sent"
+	MsgPsSendFailed      MsgKey = "ps_send_failed"
+	MsgPsEmpty           MsgKey = "ps_empty"
+	MsgPsNoSession       MsgKey = "ps_no_session"
 
 	MsgWhoamiTitle     MsgKey = "whoami_title"
 	MsgWhoamiCardTitle MsgKey = "whoami_card_title"
@@ -3179,11 +3179,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "✅ ¡Enlace exitoso! Grupo actual: %s\n\nAhora puede pedir a este bot que consulte a %s.\nEjemplo: \"Pregunta a %s sobre ...\"",
 	},
 	MsgRelaySetupHint: {
-		LangEnglish:            "\n\n⚠️ This agent does not auto-inject cc-connect instructions.\nPlease run `/bind setup` or `/cron setup` to write instructions to %s.",
-		LangChinese:            "\n\n⚠️ 当前 agent 不会自动注入 cc-connect 指令。\n请运行 `/bind setup` 或 `/cron setup` 将指令写入 %s。",
-		LangTraditionalChinese: "\n\n⚠️ 當前 agent 不會自動注入 cc-connect 指令。\n請執行 `/bind setup` 或 `/cron setup` 將指令寫入 %s。",
-		LangJapanese:           "\n\n⚠️ このエージェントは cc-connect の指示を自動注入しません。\n`/bind setup` または `/cron setup` を実行して %s に指示を書き込んでください。",
-		LangSpanish:            "\n\n⚠️ Este agente no inyecta automáticamente las instrucciones de cc-connect.\nEjecute `/bind setup` o `/cron setup` para escribirlas en %s.",
+		LangEnglish:            "\n\nℹ️ cc-connect writes instructions to %s automatically when the project starts. Use `/bind setup` or `/cron setup` to refresh them manually.",
+		LangChinese:            "\n\nℹ️ cc-connect 会在项目启动时自动将指令写入 %s。也可以用 `/bind setup` 或 `/cron setup` 手动刷新。",
+		LangTraditionalChinese: "\n\nℹ️ cc-connect 會在專案啟動時自動將指令寫入 %s。也可以用 `/bind setup` 或 `/cron setup` 手動刷新。",
+		LangJapanese:           "\n\nℹ️ cc-connect はプロジェクト起動時に %s へ指示を自動で書き込みます。`/bind setup` または `/cron setup` で手動更新できます。",
+		LangSpanish:            "\n\nℹ️ cc-connect escribe instrucciones en %s automáticamente al iniciar el proyecto. Use `/bind setup` o `/cron setup` para actualizarlas manualmente.",
 	},
 	MsgRelaySetupOK: {
 		LangEnglish:            "✅ cc-connect instructions written to %s\nThe agent can now use relay, cron, and attachment send-back.",

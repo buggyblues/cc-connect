@@ -5957,6 +5957,28 @@ func TestSetupMemoryFile_NoMemorySupport(t *testing.T) {
 	}
 }
 
+func TestStart_AutoSetsUpMemoryFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	memFile := filepath.Join(tmpDir, "AGENTS.md")
+
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubMemoryAgent{memFile: memFile}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Stop() })
+
+	content, err := os.ReadFile(memFile)
+	if err != nil {
+		t.Fatalf("read memory file: %v", err)
+	}
+	if !strings.Contains(string(content), "cc-connect send --image") {
+		t.Fatalf("expected attachment instructions, got %q", string(content))
+	}
+}
+
 func TestCmdCronSetup_WritesAndReplies(t *testing.T) {
 	tmpDir := t.TempDir()
 	memFile := filepath.Join(tmpDir, "AGENTS.md")
