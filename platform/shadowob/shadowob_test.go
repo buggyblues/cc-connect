@@ -178,6 +178,24 @@ func TestMessageNewForKnownDMDispatchesAsDM(t *testing.T) {
 	}
 }
 
+func TestMessageNewSkipsOwnBotMessages(t *testing.T) {
+	platform, err := New(map[string]any{"token": "tok", "allow_from": "*"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := platform.(*Platform)
+	p.me = shadowUser{ID: "bot1", Username: "bot"}
+	p.addDM("dm1")
+
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		t.Fatalf("own message should not dispatch: %#v", msg)
+	}
+	p.handleSocketEvent(context.Background(), socketEvent{
+		Name: "message:new",
+		Data: []byte(`{"id":"m1","channelId":"dm1","authorId":"bot1","content":"self"}`),
+	})
+}
+
 func TestShadowClientSendMessageWithToken(t *testing.T) {
 	var authHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

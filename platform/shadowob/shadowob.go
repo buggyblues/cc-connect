@@ -728,6 +728,14 @@ func (p *Platform) dispatch(msg *core.Message) {
 }
 
 func (p *Platform) shouldSkipMessage(sm shadowMessage) bool {
+	if authorID := messageAuthorID(sm); authorID != "" {
+		p.mu.RLock()
+		meID := p.me.ID
+		p.mu.RUnlock()
+		if meID != "" && authorID == meID {
+			return true
+		}
+	}
 	if id := deliveryID(sm.Metadata); id != "" {
 		p.mu.Lock()
 		p.sweepDeliveriesLocked()
