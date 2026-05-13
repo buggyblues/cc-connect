@@ -146,6 +146,38 @@ func TestHandlePolicyChangedIgnoresOtherAgents(t *testing.T) {
 	}
 }
 
+func TestMessageNewForKnownDMDispatchesAsDM(t *testing.T) {
+	platform, err := New(map[string]any{"token": "tok", "allow_from": "*"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := platform.(*Platform)
+	p.addDM("dm1")
+
+	var got *core.Message
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got = msg
+	}
+	p.handleSocketEvent(context.Background(), socketEvent{
+		Name: "message:new",
+		Data: []byte(`{"id":"m1","channelId":"dm1","authorId":"u1","content":"hello"}`),
+	})
+
+	if got == nil {
+		t.Fatal("expected message dispatch")
+	}
+	if got.ChannelKey != "shadowob:dm:dm1" || got.ChatName != "Shadow DM" {
+		t.Fatalf("got channel key/chat = %q/%q", got.ChannelKey, got.ChatName)
+	}
+	rc, ok := got.ReplyCtx.(replyContext)
+	if !ok {
+		t.Fatalf("reply context type = %T", got.ReplyCtx)
+	}
+	if rc.dmChannelID != "dm1" || rc.channelID != "dm1" {
+		t.Fatalf("reply context = %#v", rc)
+	}
+}
+
 func TestShadowClientSendMessageWithToken(t *testing.T) {
 	var authHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

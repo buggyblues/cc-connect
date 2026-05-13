@@ -442,8 +442,27 @@ func (p *Platform) joinRooms(ctx context.Context, socket *socketClient) {
 		}
 	}
 	for _, dmID := range dmIDs {
-		if err := socket.emit("dm:join", map[string]string{"dmChannelId": dmID}); err != nil {
-			slog.Warn("shadowob: DM join failed", "dm_channel_id", dmID, "error", err)
+		joinCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ack, err := socket.emitAck(joinCtx, "channel:join", map[string]string{"channelId": dmID})
+		cancel()
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				slog.Debug("shadowob: DM channel join ack not received", "dm_channel_id", dmID)
+				continue
+			}
+			slog.Warn("shadowob: DM channel join failed", "dm_channel_id", dmID, "error", err)
+			continue
+		}
+		var res struct {
+			OK bool `json:"ok"`
+		}
+		if len(ack) > 0 && string(ack) != "null" {
+			_ = json.Unmarshal(ack, &res)
+		} else {
+			res.OK = true
+		}
+		if !res.OK {
+			slog.Warn("shadowob: DM channel join denied", "dm_channel_id", dmID)
 		}
 	}
 }
@@ -454,6 +473,10 @@ func (p *Platform) handleSocketEvent(ctx context.Context, ev socketEvent) {
 		var msg shadowMessage
 		if err := json.Unmarshal(ev.Data, &msg); err != nil {
 			slog.Warn("shadowob: decode message:new failed", "error", err)
+			return
+		}
+		if p.isDMMessage(msg) {
+			p.handleDMMessage(ctx, msg)
 			return
 		}
 		p.handleChannelMessage(ctx, msg)
@@ -493,6 +516,18 @@ func (p *Platform) handleSocketEvent(ctx context.Context, ev socketEvent) {
 	case "error":
 		slog.Warn("shadowob: socket error event", "payload", string(ev.Data))
 	}
+}
+
+func (p *Platform) isDMMessage(sm shadowMessage) bool {
+	if sm.DMChannelID != "" {
+		return true
+	}
+	if sm.ChannelID == "" {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.dmChannels[sm.ChannelID]
 }
 
 func (p *Platform) handlePolicyChanged(data json.RawMessage) {
