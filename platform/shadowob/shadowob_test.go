@@ -179,6 +179,59 @@ func TestShadowClientSendMessageWithToken(t *testing.T) {
 	}
 }
 
+func TestShadowClientUsesCurrentDMRoutes(t *testing.T) {
+	var sawList bool
+	var sawSend bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/channels/dm":
+			if r.Method != http.MethodGet {
+				t.Fatalf("list DM method = %s", r.Method)
+			}
+			sawList = true
+			_ = json.NewEncoder(w).Encode([]shadowDMChannel{{ID: "dm1", UserAID: "u1", UserBID: "u2"}})
+		case "/api/channels/dm1/messages":
+			if r.Method != http.MethodPost {
+				t.Fatalf("send DM method = %s", r.Method)
+			}
+			sawSend = true
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if body["content"] != "hi" {
+				t.Fatalf("content = %v", body["content"])
+			}
+			if body["threadId"] != "thread1" {
+				t.Fatalf("threadId = %v", body["threadId"])
+			}
+			_ = json.NewEncoder(w).Encode(shadowMessage{ID: "m1", ChannelID: "dm1", Content: "hi"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := newShadowClient(server.URL, "tok")
+	dms, err := client.listDMChannels(context.Background())
+	if err != nil {
+		t.Fatalf("listDMChannels: %v", err)
+	}
+	if len(dms) != 1 || dms[0].ID != "dm1" {
+		t.Fatalf("dms = %#v", dms)
+	}
+	msg, err := client.sendDMMessage(context.Background(), "dm1", "hi", sendMessageOptions{ThreadID: "thread1"})
+	if err != nil {
+		t.Fatalf("sendDMMessage: %v", err)
+	}
+	if msg.ID != "m1" || msg.DMChannelID != "dm1" {
+		t.Fatalf("message = %#v", msg)
+	}
+	if !sawList || !sawSend {
+		t.Fatalf("expected both DM routes to be hit, list=%v send=%v", sawList, sawSend)
+	}
+}
+
 func TestSendFileUploadsForRemoteServer(t *testing.T) {
 	var uploaded bool
 	var msgAttachments []any
@@ -309,14 +362,16 @@ func TestResolveInboundMediaUsesSignedAttachmentURL(t *testing.T) {
 		mediaMaxBytes: defaultMediaMaxBytes,
 	}
 	images, files, audio, _ := p.resolveInboundMedia(context.Background(), shadowMessage{
-		ChannelID: "ch1",
-		Attachments: []shadowAttachment{{
-			ID:          "att1",
-			Filename:    "sample.png",
-			URL:         "/shadow/uploads/sample.png",
-			ContentType: "image/png",
-			Size:        3,
-		}},
+		DMChannelID: "dm1",
+		Attachments: []shadowAttachment{
+			{
+				ID:          "att1",
+				Filename:    "sample.png",
+				URL:         "/shadow/uploads/sample.png",
+				ContentType: "image/png",
+				Size:        3,
+			},
+		},
 	}, "look")
 	if !resolved {
 		t.Fatal("expected signed media URL resolution")

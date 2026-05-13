@@ -196,7 +196,7 @@ func (c *shadowClient) getServerChannels(ctx context.Context, serverID string) (
 
 func (c *shadowClient) listDMChannels(ctx context.Context) ([]shadowDMChannel, error) {
 	var out []shadowDMChannel
-	if err := c.requestJSON(ctx, http.MethodGet, "/api/dm/channels", nil, &out); err != nil {
+	if err := c.requestJSON(ctx, http.MethodGet, "/api/channels/dm", nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -240,6 +240,9 @@ func (c *shadowClient) sendMessage(ctx context.Context, channelID, content strin
 
 func (c *shadowClient) sendDMMessage(ctx context.Context, dmChannelID, content string, opts sendMessageOptions) (*shadowMessage, error) {
 	body := map[string]any{"content": content}
+	if opts.ThreadID != "" {
+		body["threadId"] = opts.ThreadID
+	}
 	if opts.ReplyToID != "" {
 		body["replyToId"] = opts.ReplyToID
 	}
@@ -250,8 +253,11 @@ func (c *shadowClient) sendDMMessage(ctx context.Context, dmChannelID, content s
 		body["attachments"] = opts.Attachments
 	}
 	var out shadowMessage
-	if err := c.requestJSON(ctx, http.MethodPost, "/api/dm/channels/"+url.PathEscape(dmChannelID)+"/messages", body, &out); err != nil {
+	if err := c.requestJSON(ctx, http.MethodPost, "/api/channels/"+url.PathEscape(dmChannelID)+"/messages", body, &out); err != nil {
 		return nil, err
+	}
+	if out.DMChannelID == "" {
+		out.DMChannelID = dmChannelID
 	}
 	return &out, nil
 }
@@ -327,14 +333,11 @@ func (c *shadowClient) uploadMedia(ctx context.Context, data []byte, filename, c
 	return &out, nil
 }
 
-func (c *shadowClient) resolveAttachmentMediaURL(ctx context.Context, attachmentID string, dm bool) (string, error) {
+func (c *shadowClient) resolveAttachmentMediaURL(ctx context.Context, attachmentID string, _ bool) (string, error) {
 	if attachmentID == "" {
 		return "", fmt.Errorf("shadowob: empty attachment id")
 	}
 	apiPath := "/api/attachments/" + url.PathEscape(attachmentID) + "/media-url?disposition=inline"
-	if dm {
-		apiPath = "/api/dm-attachments/" + url.PathEscape(attachmentID) + "/media-url?disposition=inline"
-	}
 	var out shadowSignedMediaURL
 	if err := c.requestJSON(ctx, http.MethodGet, apiPath, nil, &out); err != nil {
 		return "", err
