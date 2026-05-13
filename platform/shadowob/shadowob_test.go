@@ -129,6 +129,52 @@ func TestPublicSlashCommandsStripsBody(t *testing.T) {
 	}
 }
 
+func TestRegisterCommandsPublishesCoreCommands(t *testing.T) {
+	var authHeader string
+	var got struct {
+		Commands []shadowSlashCommand `json:"commands"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agents/agent-1/slash-commands" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPut {
+			t.Fatalf("method = %s, want PUT", r.Method)
+		}
+		authHeader = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer server.Close()
+
+	p := &Platform{
+		agentID: "agent-1",
+		client:  newShadowClient(server.URL, "tok"),
+	}
+	err := p.RegisterCommands([]core.BotCommandInfo{{
+		Command:     "help",
+		Description: "Show help",
+	}})
+	if err != nil {
+		t.Fatalf("RegisterCommands: %v", err)
+	}
+	if authHeader != "Bearer tok" {
+		t.Fatalf("auth header = %q", authHeader)
+	}
+	if len(got.Commands) != 1 {
+		t.Fatalf("commands = %#v", got.Commands)
+	}
+	if got.Commands[0].Name != "help" || got.Commands[0].Description != "Show help" {
+		t.Fatalf("registered command = %#v", got.Commands[0])
+	}
+	if got.Commands[0].PackID != "cc-connect" {
+		t.Fatalf("pack id = %q, want cc-connect", got.Commands[0].PackID)
+	}
+}
+
 func TestHandlePolicyChangedIgnoresOtherAgents(t *testing.T) {
 	p := &Platform{
 		agentID: "agent-1",
