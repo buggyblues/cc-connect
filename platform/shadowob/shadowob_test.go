@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,6 +127,29 @@ func TestPublicSlashCommandsStripsBody(t *testing.T) {
 	}
 	if commands[0].Body != "" {
 		t.Fatalf("public slash command body = %q, want empty", commands[0].Body)
+	}
+}
+
+func TestInteractiveResponseContentDoesNotDuplicateVisibleEcho(t *testing.T) {
+	p := &Platform{}
+	body := p.interactiveResponseContent(context.Background(), shadowMessage{
+		ID:      "response-1",
+		Content: "Use the submitted values as answers.\n- Q1: 1",
+	}, map[string]any{
+		"actionId": "submit",
+		"values": map[string]any{
+			"q1": "1",
+		},
+	})
+
+	if !strings.Contains(body, "Submitted values") {
+		t.Fatalf("interactive response body missing submitted values: %q", body)
+	}
+	if !strings.Contains(body, "Use the submitted values once.") {
+		t.Fatalf("interactive response body missing de-dup instruction: %q", body)
+	}
+	if strings.Contains(body, "User message:") || strings.Contains(body, "- Q1: 1") {
+		t.Fatalf("interactive response body duplicated visible echo: %q", body)
 	}
 }
 

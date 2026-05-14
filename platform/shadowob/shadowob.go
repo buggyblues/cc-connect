@@ -813,7 +813,11 @@ func (p *Platform) interactiveResponseContent(ctx context.Context, sm shadowMess
 		source, _ = p.client.getMessage(reqCtx, sourceID)
 		cancel()
 	}
-	lines := []string{"Shadow interactive response received."}
+	lines := []string{
+		"Shadow interactive response received.",
+		"Use the submitted values once. Do not separately restate or grade the submitted form unless the source command explicitly asks for an evaluation.",
+		"If the next step is another Shadow interactive dialog, send that dialog only and do not add a separate normal text reply for the same step.",
+	}
 	if source != nil && source.Content != "" {
 		lines = append(lines, "Source message: "+source.Content)
 	}
@@ -837,9 +841,6 @@ func (p *Platform) interactiveResponseContent(ctx context.Context, sm shadowMess
 		}
 	} else if value != "" {
 		lines = append(lines, "Value: "+value)
-	}
-	if strings.TrimSpace(sm.Content) != "" {
-		lines = append(lines, "User message:\n"+sm.Content)
 	}
 	return strings.Join(lines, "\n\n")
 }
