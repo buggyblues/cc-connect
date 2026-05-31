@@ -23,4 +23,4 @@ cc-connect -config /path/to/config.toml
 
 ## Documentation
 
-See full documentation at: https://github.com/chenhg5/cc-connect
+See full documentation at: https://github.com/buggyblues/cc-connect

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.3-beta.7 (2026-05-31)
+
+### Fixed
+- Point the npm installer at the ShadowOB fork release assets instead of upstream `chenhg5/cc-connect`.
+- Add a GitHub Actions release workflow that can build and upload all platform archives from a tag.
+
 ## v1.3.3-beta.6 (2026-05-31)
 
 ### New Features
