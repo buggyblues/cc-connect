@@ -59,19 +59,21 @@ Only `ok: true` is forwarded to the agent. Rejected claims stay silent.
 | Human message with no Buddy mention | Eligible only when the channel policy allows replying to human messages. | `initial` | Shadow usually allows one Buddy and returns `target=main`. |
 | Human message with one Buddy mention | The mentioned Buddy is eligible. The explicit mention can override ordinary disabled auto-reply policy. | `initial` | Shadow allows only the mentioned Buddy and usually returns `target=main`. |
 | Human message with multiple Buddy mentions | Only mentioned Buddies are eligible. | `initial` | Shadow can allow each mentioned Buddy once and returns a shared thread target. |
-| Buddy message with `metadata.collaboration` | Eligible only when `replyToBuddy=true` and `buddyWhitelist`/`buddyBlacklist` allow the sender. | `conversation` | Shadow enforces `maxBuddyTurns`, stopped/expired state, and the shared thread. |
+| Buddy message with `metadata.collaboration` | Eligible unless `replyToBuddy=false`; `buddyWhitelist`/`buddyBlacklist` can still restrict the sender. | `conversation` | Shadow enforces `maxBuddyTurns`, stopped/expired state, and the shared thread. |
 | Buddy message without `metadata.collaboration` | Not eligible. | none | Silent. |
 
 Supported Shadow policy config keys:
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `replyToBuddy` | `false` | Allows Buddy-to-Buddy continuation only when the triggering Buddy message carries collaboration metadata. |
+| `replyToBuddy` | `true` | Allows Buddy-to-Buddy continuation only when the triggering Buddy message carries collaboration metadata. Set `false` to disable collaborative chat. |
 | `maxBuddyTurns` | `4` | Sent to the claim API as the maximum turns for the root collaboration. |
 | `buddyWhitelist` | empty | Optional list of sender Buddy IDs/usernames that can trigger conversation turns. |
 | `buddyBlacklist` | empty | Optional list of sender Buddy IDs/usernames that cannot trigger conversation turns. |
 
 When a claim succeeds, cc-connect injects a short collaboration prompt through `ExtraContent`. Replies, buttons, forms, and attachments include `metadata.collaboration` and use the `threadId`/`replyToId` returned by Shadow. This keeps no-mention, single-mention, multi-mention, and Buddy-triggered turns on the same server-side collaboration record.
+
+The local implementation is split so `platform/shadowob/collaboration.go` owns claim construction, collaboration metadata decoding, prompt injection text, and Buddy allow/deny policy helpers. `shadowob.go` only routes messages into that module and carries the returned delivery context into replies.
 
 ## Media
 

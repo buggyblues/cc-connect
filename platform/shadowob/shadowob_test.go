@@ -427,7 +427,6 @@ func TestBuddyMessageWithoutCollaborationIsSkipped(t *testing.T) {
 		Policy: shadowChannelPolicy{
 			Listen: true,
 			Reply:  true,
-			Config: map[string]any{"replyToBuddy": true},
 		},
 	}
 	p.handler = func(_ core.Platform, msg *core.Message) {
@@ -439,6 +438,49 @@ func TestBuddyMessageWithoutCollaborationIsSkipped(t *testing.T) {
 		AuthorID:  "buddy-2",
 		Content:   "I can help",
 		Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
+	})
+	if claimCount != 0 {
+		t.Fatalf("claim count = %d, want 0", claimCount)
+	}
+}
+
+func TestBuddyMessageWithCollaborationHonorsExplicitReplyToBuddyFalse(t *testing.T) {
+	claimCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/buddy-collaborations/claim" {
+			claimCount++
+			t.Fatalf("claim should not be called when replyToBuddy=false")
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.channels["ch1"] = channelRuntime{
+		ID: "ch1",
+		Policy: shadowChannelPolicy{
+			Listen: true,
+			Reply:  true,
+			Config: map[string]any{"replyToBuddy": false},
+		},
+	}
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		t.Fatalf("Buddy message should not dispatch when replyToBuddy=false: %#v", msg)
+	}
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "buddy-msg-1",
+		ChannelID: "ch1",
+		AuthorID:  "buddy-2",
+		Content:   "One more point.",
+		Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
+		Metadata: map[string]any{
+			"collaboration": map[string]any{
+				"id":            "collab-1",
+				"rootMessageId": "root-1",
+				"buddyId":       "buddy-2",
+				"turn":          1,
+			},
+		},
 	})
 	if claimCount != 0 {
 		t.Fatalf("claim count = %d, want 0", claimCount)
@@ -521,7 +563,7 @@ func TestBuddyMessageWithCollaborationClaimsConversationTurn(t *testing.T) {
 		Policy: shadowChannelPolicy{
 			Listen: true,
 			Reply:  true,
-			Config: map[string]any{"replyToBuddy": true, "maxBuddyTurns": 2},
+			Config: map[string]any{"maxBuddyTurns": 2},
 		},
 	}
 	var got *core.Message

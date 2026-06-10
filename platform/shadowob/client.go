@@ -67,41 +67,6 @@ type shadowMessage struct {
 	Metadata    map[string]any     `json:"metadata,omitempty"`
 }
 
-type buddyCollaborationMetadata struct {
-	ID                 string `json:"id"`
-	RootMessageID      string `json:"rootMessageId"`
-	BuddyID            string `json:"buddyId"`
-	Turn               int    `json:"turn"`
-	Target             string `json:"target,omitempty"`
-	ThreadID           string `json:"threadId,omitempty"`
-	SuggestedTextLimit int    `json:"suggestedTextLimit,omitempty"`
-	ReplyDensity       string `json:"replyDensity,omitempty"`
-	ReplyToID          string `json:"-"`
-}
-
-type claimBuddyReplyInput struct {
-	ChannelID        string `json:"channelId"`
-	RootMessageID    string `json:"rootMessageId"`
-	BuddyID          string `json:"buddyId"`
-	ReplyToMessageID string `json:"replyToMessageId"`
-	MaxTurns         int    `json:"maxTurns,omitempty"`
-	Mode             string `json:"mode,omitempty"`
-	PreferredTarget  string `json:"preferredTarget,omitempty"`
-}
-
-type claimBuddyReplyResult struct {
-	OK              bool   `json:"ok"`
-	Reason          string `json:"reason,omitempty"`
-	CollaborationID string `json:"collaborationId,omitempty"`
-	Turn            int    `json:"turn,omitempty"`
-	ReplyToID       string `json:"replyToId,omitempty"`
-	Target          string `json:"target,omitempty"`
-	ThreadID        string `json:"threadId,omitempty"`
-	Metadata        struct {
-		Collaboration *buddyCollaborationMetadata `json:"collaboration,omitempty"`
-	} `json:"metadata,omitempty"`
-}
-
 type shadowChannel struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
