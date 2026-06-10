@@ -67,6 +67,41 @@ type shadowMessage struct {
 	Metadata    map[string]any     `json:"metadata,omitempty"`
 }
 
+type buddyCollaborationMetadata struct {
+	ID                 string `json:"id"`
+	RootMessageID      string `json:"rootMessageId"`
+	BuddyID            string `json:"buddyId"`
+	Turn               int    `json:"turn"`
+	Target             string `json:"target,omitempty"`
+	ThreadID           string `json:"threadId,omitempty"`
+	SuggestedTextLimit int    `json:"suggestedTextLimit,omitempty"`
+	ReplyDensity       string `json:"replyDensity,omitempty"`
+	ReplyToID          string `json:"-"`
+}
+
+type claimBuddyReplyInput struct {
+	ChannelID        string `json:"channelId"`
+	RootMessageID    string `json:"rootMessageId"`
+	BuddyID          string `json:"buddyId"`
+	ReplyToMessageID string `json:"replyToMessageId"`
+	MaxTurns         int    `json:"maxTurns,omitempty"`
+	Mode             string `json:"mode,omitempty"`
+	PreferredTarget  string `json:"preferredTarget,omitempty"`
+}
+
+type claimBuddyReplyResult struct {
+	OK              bool   `json:"ok"`
+	Reason          string `json:"reason,omitempty"`
+	CollaborationID string `json:"collaborationId,omitempty"`
+	Turn            int    `json:"turn,omitempty"`
+	ReplyToID       string `json:"replyToId,omitempty"`
+	Target          string `json:"target,omitempty"`
+	ThreadID        string `json:"threadId,omitempty"`
+	Metadata        struct {
+		Collaboration *buddyCollaborationMetadata `json:"collaboration,omitempty"`
+	} `json:"metadata,omitempty"`
+}
+
 type shadowChannel struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -205,6 +240,14 @@ func (c *shadowClient) listDMChannels(ctx context.Context) ([]shadowDMChannel, e
 func (c *shadowClient) getMessage(ctx context.Context, messageID string) (*shadowMessage, error) {
 	var out shadowMessage
 	if err := c.requestJSON(ctx, http.MethodGet, "/api/messages/"+url.PathEscape(messageID), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *shadowClient) claimBuddyReply(ctx context.Context, input claimBuddyReplyInput) (*claimBuddyReplyResult, error) {
+	var out claimBuddyReplyResult
+	if err := c.requestJSON(ctx, http.MethodPost, "/api/buddy-collaborations/claim", input, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

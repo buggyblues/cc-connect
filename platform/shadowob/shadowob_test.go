@@ -266,6 +266,307 @@ func TestMessageNewSkipsOwnBotMessages(t *testing.T) {
 	})
 }
 
+func TestMessageNewSkipsSentMessageEchoByID(t *testing.T) {
+	platform, err := New(map[string]any{"token": "tok", "allow_from": "*"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := platform.(*Platform)
+	p.addDM("dm1")
+	p.recordSentMessageID(&shadowMessage{ID: "m1"})
+
+	var got *core.Message
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got = msg
+	}
+	p.handleSocketEvent(context.Background(), socketEvent{
+		Name: "message:new",
+		Data: []byte(`{"id":"m1","channelId":"dm1","authorId":"u1","content":"self echo"}`),
+	})
+	if got != nil {
+		t.Fatalf("sent message echo should not dispatch: %#v", got)
+	}
+
+	p.handleSocketEvent(context.Background(), socketEvent{
+		Name: "message:new",
+		Data: []byte(`{"id":"m2","channelId":"dm1","authorId":"u1","content":"hello"}`),
+	})
+	if got == nil {
+		t.Fatal("expected a distinct message to dispatch")
+	}
+}
+
+func TestChannelMessageClaimsHumanBuddyCollaborationAndRepliesWithMetadata(t *testing.T) {
+	var claimReq claimBuddyReplyInput
+	var sendBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/buddy-collaborations/claim":
+			if r.Method != http.MethodPost {
+				t.Fatalf("claim method = %s, want POST", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&claimReq); err != nil {
+				t.Fatalf("decode claim: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":              true,
+				"collaborationId": "collab-1",
+				"turn":            1,
+				"replyToId":       "root-1",
+				"target":          "thread",
+				"threadId":        "thread-collab",
+				"metadata": map[string]any{
+					"collaboration": map[string]any{
+						"id":                 "collab-1",
+						"rootMessageId":      "root-1",
+						"buddyId":            "buddy-1",
+						"turn":               1,
+						"target":             "thread",
+						"threadId":           "thread-collab",
+						"suggestedTextLimit": 120,
+						"replyDensity":       "brief",
+					},
+				},
+			})
+		case "/api/channels/ch1/messages":
+			if r.Method != http.MethodPost {
+				t.Fatalf("send method = %s, want POST", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&sendBody); err != nil {
+				t.Fatalf("decode send: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(shadowMessage{ID: "bot-msg-1", ChannelID: "ch1", Content: "done"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.channels["ch1"] = channelRuntime{
+		ID:   "ch1",
+		Name: "general",
+		Policy: shadowChannelPolicy{
+			Listen: true,
+			Reply:  true,
+			Config: map[string]any{"maxBuddyTurns": 3},
+		},
+	}
+
+	var got *core.Message
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got = msg
+	}
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "root-1",
+		ChannelID: "ch1",
+		AuthorID:  "human-1",
+		Content:   "hello",
+		Author:    &shadowAuthor{ID: "human-1", Username: "alice"},
+	})
+
+	if claimReq.Mode != "initial" || claimReq.RootMessageID != "root-1" || claimReq.ReplyToMessageID != "root-1" {
+		t.Fatalf("claim request = %#v", claimReq)
+	}
+	if claimReq.BuddyID != "buddy-1" || claimReq.MaxTurns != 3 {
+		t.Fatalf("claim buddy/max turns = %#v", claimReq)
+	}
+	if got == nil {
+		t.Fatal("expected dispatch after successful claim")
+	}
+	if got.ChannelKey != "shadowob:channel:ch1:thread:thread-collab" {
+		t.Fatalf("channel key = %q", got.ChannelKey)
+	}
+	if !strings.Contains(got.ExtraContent, "Shadow Buddy collaboration context") {
+		t.Fatalf("missing collaboration prompt: %q", got.ExtraContent)
+	}
+	rc, ok := got.ReplyCtx.(replyContext)
+	if !ok {
+		t.Fatalf("reply context type = %T", got.ReplyCtx)
+	}
+	if rc.threadID != "thread-collab" || rc.replyToID != "root-1" {
+		t.Fatalf("reply context = %#v", rc)
+	}
+	if rc.collaboration == nil || rc.collaboration.ID != "collab-1" {
+		t.Fatalf("collaboration = %#v", rc.collaboration)
+	}
+
+	if err := p.Reply(context.Background(), got.ReplyCtx, "done"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if sendBody["threadId"] != "thread-collab" || sendBody["replyToId"] != "root-1" {
+		t.Fatalf("send target = %#v", sendBody)
+	}
+	metadata, ok := sendBody["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v", sendBody["metadata"])
+	}
+	collaboration, ok := metadata["collaboration"].(map[string]any)
+	if !ok {
+		t.Fatalf("collaboration metadata = %#v", metadata["collaboration"])
+	}
+	if collaboration["id"] != "collab-1" || collaboration["rootMessageId"] != "root-1" {
+		t.Fatalf("collaboration metadata = %#v", collaboration)
+	}
+}
+
+func TestBuddyMessageWithoutCollaborationIsSkipped(t *testing.T) {
+	claimCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/buddy-collaborations/claim" {
+			claimCount++
+			t.Fatalf("claim should not be called without collaboration metadata")
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.channels["ch1"] = channelRuntime{
+		ID: "ch1",
+		Policy: shadowChannelPolicy{
+			Listen: true,
+			Reply:  true,
+			Config: map[string]any{"replyToBuddy": true},
+		},
+	}
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		t.Fatalf("Buddy message without collaboration should not dispatch: %#v", msg)
+	}
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "buddy-msg-1",
+		ChannelID: "ch1",
+		AuthorID:  "buddy-2",
+		Content:   "I can help",
+		Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
+	})
+	if claimCount != 0 {
+		t.Fatalf("claim count = %d, want 0", claimCount)
+	}
+}
+
+func TestExplicitMentionOverridesDisabledReplyPolicy(t *testing.T) {
+	var claimReq claimBuddyReplyInput
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/buddy-collaborations/claim" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&claimReq); err != nil {
+			t.Fatalf("decode claim: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":              true,
+			"collaborationId": "collab-mention",
+			"turn":            1,
+			"replyToId":       "root-mention",
+			"target":          "main",
+		})
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.me = shadowUser{ID: "buddy-user", Username: "buddy"}
+	p.channels["ch1"] = channelRuntime{
+		ID: "ch1",
+		Policy: shadowChannelPolicy{
+			Listen:      true,
+			Reply:       false,
+			MentionOnly: true,
+		},
+	}
+	var got *core.Message
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got = msg
+	}
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "root-mention",
+		ChannelID: "ch1",
+		AuthorID:  "human-1",
+		Content:   "@buddy please check",
+		Author:    &shadowAuthor{ID: "human-1", Username: "alice"},
+	})
+	if claimReq.Mode != "initial" || claimReq.RootMessageID != "root-mention" {
+		t.Fatalf("claim request = %#v", claimReq)
+	}
+	if got == nil {
+		t.Fatal("expected explicit mention to dispatch despite disabled reply policy")
+	}
+}
+
+func TestBuddyMessageWithCollaborationClaimsConversationTurn(t *testing.T) {
+	var claimReq claimBuddyReplyInput
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/buddy-collaborations/claim" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&claimReq); err != nil {
+			t.Fatalf("decode claim: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":              true,
+			"collaborationId": "collab-1",
+			"turn":            2,
+			"replyToId":       "buddy-msg-1",
+			"target":          "thread",
+			"threadId":        "thread-collab",
+		})
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.channels["ch1"] = channelRuntime{
+		ID: "ch1",
+		Policy: shadowChannelPolicy{
+			Listen: true,
+			Reply:  true,
+			Config: map[string]any{"replyToBuddy": true, "maxBuddyTurns": 2},
+		},
+	}
+	var got *core.Message
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got = msg
+	}
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "buddy-msg-1",
+		ChannelID: "ch1",
+		AuthorID:  "buddy-2",
+		Content:   "One more point.",
+		Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
+		Metadata: map[string]any{
+			"collaboration": map[string]any{
+				"id":            "collab-1",
+				"rootMessageId": "root-1",
+				"buddyId":       "buddy-2",
+				"turn":          1,
+				"target":        "thread",
+				"threadId":      "thread-collab",
+			},
+		},
+	})
+
+	if claimReq.Mode != "conversation" || claimReq.RootMessageID != "root-1" || claimReq.ReplyToMessageID != "buddy-msg-1" {
+		t.Fatalf("claim request = %#v", claimReq)
+	}
+	if claimReq.MaxTurns != 2 {
+		t.Fatalf("max turns = %d, want 2", claimReq.MaxTurns)
+	}
+	if got == nil {
+		t.Fatal("expected conversation dispatch")
+	}
+	if !strings.Contains(got.ExtraContent, "This Buddy turn: 2") {
+		t.Fatalf("missing turn context: %q", got.ExtraContent)
+	}
+	rc, ok := got.ReplyCtx.(replyContext)
+	if !ok {
+		t.Fatalf("reply context type = %T", got.ReplyCtx)
+	}
+	if rc.replyToID != "buddy-msg-1" || rc.threadID != "thread-collab" {
+		t.Fatalf("reply context = %#v", rc)
+	}
+}
+
 func TestShadowClientSendMessageWithToken(t *testing.T) {
 	var authHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -505,4 +806,19 @@ func TestResolveInboundMediaUsesSignedAttachmentURL(t *testing.T) {
 	if len(files) != 0 || audio != nil {
 		t.Fatalf("unexpected files/audio: %#v %#v", files, audio)
 	}
+}
+
+func newShadowOBTestPlatform(t *testing.T, serverURL string) *Platform {
+	t.Helper()
+	platform, err := New(map[string]any{
+		"token":      "tok",
+		"allow_from": "*",
+		"agent_id":   "buddy-1",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := platform.(*Platform)
+	p.client = newShadowClient(serverURL, "tok")
+	return p
 }

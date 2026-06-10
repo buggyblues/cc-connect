@@ -44,6 +44,35 @@ Server and channel routing is read from the Buddy policy via `/api/agents/:id/co
 | `media_max_bytes` | `20971520` | Max inbound media download size. |
 | `slash_commands_path` | `$SHADOW_SLASH_COMMANDS_PATH` | Optional Shadow/OpenClaw-style slash command JSON. |
 
+## Buddy Collaboration Rules
+
+Channel auto-replies are coordinated by Shadow, not by local cc-connect heuristics. Before dispatching a channel message to an agent, ShadowOB calls:
+
+```http
+POST /api/buddy-collaborations/claim
+```
+
+Only `ok: true` is forwarded to the agent. Rejected claims stay silent.
+
+| Trigger | Local candidate rule | Claim mode | Delivery |
+| --- | --- | --- | --- |
+| Human message with no Buddy mention | Eligible only when the channel policy allows replying to human messages. | `initial` | Shadow usually allows one Buddy and returns `target=main`. |
+| Human message with one Buddy mention | The mentioned Buddy is eligible. The explicit mention can override ordinary disabled auto-reply policy. | `initial` | Shadow allows only the mentioned Buddy and usually returns `target=main`. |
+| Human message with multiple Buddy mentions | Only mentioned Buddies are eligible. | `initial` | Shadow can allow each mentioned Buddy once and returns a shared thread target. |
+| Buddy message with `metadata.collaboration` | Eligible only when `replyToBuddy=true` and `buddyWhitelist`/`buddyBlacklist` allow the sender. | `conversation` | Shadow enforces `maxBuddyTurns`, stopped/expired state, and the shared thread. |
+| Buddy message without `metadata.collaboration` | Not eligible. | none | Silent. |
+
+Supported Shadow policy config keys:
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `replyToBuddy` | `false` | Allows Buddy-to-Buddy continuation only when the triggering Buddy message carries collaboration metadata. |
+| `maxBuddyTurns` | `4` | Sent to the claim API as the maximum turns for the root collaboration. |
+| `buddyWhitelist` | empty | Optional list of sender Buddy IDs/usernames that can trigger conversation turns. |
+| `buddyBlacklist` | empty | Optional list of sender Buddy IDs/usernames that cannot trigger conversation turns. |
+
+When a claim succeeds, cc-connect injects a short collaboration prompt through `ExtraContent`. Replies, buttons, forms, and attachments include `metadata.collaboration` and use the `threadId`/`replyToId` returned by Shadow. This keeps no-mention, single-mention, multi-mention, and Buddy-triggered turns on the same server-side collaboration record.
+
 ## Media
 
 Inbound Shadow attachments are downloaded with the configured token and capped by `media_max_bytes`. Images are passed to the agent as images, audio as voice/audio, and other content as files.

@@ -35,11 +35,13 @@ var (
 )
 
 type replyContext struct {
-	channelID   string
-	dmChannelID string
-	threadID    string
-	messageID   string
-	sessionKey  string
+	channelID     string
+	dmChannelID   string
+	threadID      string
+	messageID     string
+	replyToID     string
+	sessionKey    string
+	collaboration *buddyCollaborationMetadata
 }
 
 type previewHandle struct {
@@ -88,6 +90,8 @@ type Platform struct {
 	localCommands       []shadowSlashCommand
 	sentDeliveryIDs     map[string]time.Time
 	lastDeliverySweep   time.Time
+	sentMessageIDs      map[string]time.Time
+	lastSentMsgSweep    time.Time
 	receivedMsgIDs      map[string]time.Time
 	lastReceivedSweep   time.Time
 	previewMsgs         map[string]string
@@ -143,6 +147,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		dmChannels:            make(map[string]bool),
 		localCommands:         localCommands,
 		sentDeliveryIDs:       make(map[string]time.Time),
+		sentMessageIDs:        make(map[string]time.Time),
 		receivedMsgIDs:        make(map[string]time.Time),
 		previewMsgs:           make(map[string]string),
 	}, nil
@@ -577,19 +582,25 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 	if !p.allowedSender(sm) {
 		return
 	}
-	if rt.Policy.Listen && rt.Policy.Reply == false {
+	mentionsMe := p.messageMentionsMe(sm)
+	if rt.Policy.Listen && rt.Policy.Reply == false && !mentionsMe {
 		slog.Debug("shadowob: ignoring no-reply policy message", "channel_id", sm.ChannelID, "message_id", sm.ID)
 		return
 	}
-	if rt.Policy.MentionOnly && !p.messageMentionsMe(sm) {
+	if rt.Policy.MentionOnly && !mentionsMe {
 		slog.Debug("shadowob: ignoring unmentioned message", "channel_id", sm.ChannelID, "message_id", sm.ID)
 		return
 	}
 
-	if p.handleLocalSlashPrompt(ctx, sm, false) {
+	collaboration, ok := p.claimBuddyCollaboration(ctx, sm, rt)
+	if !ok {
 		return
 	}
-	msg := p.toCoreMessage(ctx, sm, false, rt)
+
+	if p.handleLocalSlashPrompt(ctx, sm, false, collaboration) {
+		return
+	}
+	msg := p.toCoreMessage(ctx, sm, false, rt, collaboration)
 	if msg == nil {
 		return
 	}
@@ -607,17 +618,17 @@ func (p *Platform) handleDMMessage(ctx context.Context, sm shadowMessage) {
 		return
 	}
 	p.addDM(sm.DMChannelID)
-	if p.handleLocalSlashPrompt(ctx, sm, true) {
+	if p.handleLocalSlashPrompt(ctx, sm, true, nil) {
 		return
 	}
-	msg := p.toCoreMessage(ctx, sm, true, channelRuntime{})
+	msg := p.toCoreMessage(ctx, sm, true, channelRuntime{}, nil)
 	if msg == nil {
 		return
 	}
 	p.dispatch(msg)
 }
 
-func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage, dm bool) bool {
+func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage, dm bool, collaboration *buddyCollaborationMetadata) bool {
 	content := strings.TrimSpace(sm.Content)
 	if len(p.localCommands) == 0 || content == "" || content[0] != '/' || interactiveResponse(sm.Metadata) != nil {
 		return false
@@ -639,7 +650,7 @@ func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage,
 			"packId":      match.Command.PackID,
 		},
 	})
-	rc := replyContext{channelID: sm.ChannelID, dmChannelID: sm.DMChannelID, threadID: sm.ThreadID, messageID: sm.ID}
+	rc := p.replyContextForMessage(sm, dm, collaboration)
 	_, err := p.sendToReplyContext(ctx, rc, contentToSend, true, metadata)
 	if err != nil {
 		slog.Warn("shadowob: send slash form failed", "error", err)
@@ -647,7 +658,7 @@ func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage,
 	return true
 }
 
-func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool, rt channelRuntime) *core.Message {
+func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool, rt channelRuntime, collaboration *buddyCollaborationMetadata) *core.Message {
 	body := sm.Content
 	if ir := interactiveResponse(sm.Metadata); ir != nil {
 		body = p.interactiveResponseContent(ctx, sm, ir)
@@ -665,12 +676,13 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 	if authorName == "" {
 		authorName = authorID
 	}
-	sessionKey := p.sessionKey(sm, dm, authorID)
+	effectiveThreadID := effectiveCollaborationThreadID(sm, collaboration)
+	sessionKey := p.sessionKeyFor(sm, dm, authorID, effectiveThreadID)
 	channelKey := "shadowob:channel:" + sm.ChannelID
 	if dm {
 		channelKey = "shadowob:dm:" + sm.DMChannelID
-	} else if sm.ThreadID != "" {
-		channelKey = "shadowob:channel:" + sm.ChannelID + ":thread:" + sm.ThreadID
+	} else if effectiveThreadID != "" {
+		channelKey = "shadowob:channel:" + sm.ChannelID + ":thread:" + effectiveThreadID
 	}
 
 	chatName := ""
@@ -680,28 +692,52 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 		chatName = "#" + rt.Name
 	}
 	return &core.Message{
-		SessionKey: sessionKey,
-		Platform:   "shadowob",
-		MessageID:  sm.ID,
-		UserID:     authorID,
-		UserName:   authorName,
-		ChatName:   chatName,
-		Content:    body,
-		Images:     images,
-		Files:      files,
-		Audio:      audio,
-		ChannelKey: channelKey,
-		ReplyCtx: replyContext{
-			channelID:   sm.ChannelID,
-			dmChannelID: sm.DMChannelID,
-			threadID:    sm.ThreadID,
-			messageID:   sm.ID,
-			sessionKey:  sessionKey,
-		},
+		SessionKey:   sessionKey,
+		Platform:     "shadowob",
+		MessageID:    sm.ID,
+		UserID:       authorID,
+		UserName:     authorName,
+		ChatName:     chatName,
+		Content:      body,
+		Images:       images,
+		Files:        files,
+		Audio:        audio,
+		ChannelKey:   channelKey,
+		ExtraContent: formatBuddyCollaborationPrompt(collaboration),
+		ReplyCtx:     p.replyContextForMessage(sm, dm, collaboration),
+	}
+}
+
+func effectiveCollaborationThreadID(sm shadowMessage, collaboration *buddyCollaborationMetadata) string {
+	if collaboration != nil && collaboration.Target == "thread" && collaboration.ThreadID != "" {
+		return collaboration.ThreadID
+	}
+	return sm.ThreadID
+}
+
+func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, collaboration *buddyCollaborationMetadata) replyContext {
+	authorID := messageAuthorID(sm)
+	threadID := effectiveCollaborationThreadID(sm, collaboration)
+	replyToID := sm.ID
+	if collaboration != nil && collaboration.ReplyToID != "" {
+		replyToID = collaboration.ReplyToID
+	}
+	return replyContext{
+		channelID:     sm.ChannelID,
+		dmChannelID:   sm.DMChannelID,
+		threadID:      threadID,
+		messageID:     sm.ID,
+		replyToID:     replyToID,
+		sessionKey:    p.sessionKeyFor(sm, dm, authorID, threadID),
+		collaboration: collaboration,
 	}
 }
 
 func (p *Platform) sessionKey(sm shadowMessage, dm bool, authorID string) string {
+	return p.sessionKeyFor(sm, dm, authorID, sm.ThreadID)
+}
+
+func (p *Platform) sessionKeyFor(sm shadowMessage, dm bool, authorID string, threadID string) string {
 	if dm {
 		if p.shareSessionInChannel {
 			return "shadowob:dm:" + sm.DMChannelID
@@ -709,13 +745,84 @@ func (p *Platform) sessionKey(sm shadowMessage, dm bool, authorID string) string
 		return "shadowob:dm:" + sm.DMChannelID + ":" + authorID
 	}
 	conv := sm.ChannelID
-	if sm.ThreadID != "" {
-		conv = sm.ChannelID + ":thread:" + sm.ThreadID
+	if threadID != "" {
+		conv = sm.ChannelID + ":thread:" + threadID
 	}
 	if p.shareSessionInChannel {
 		return "shadowob:channel:" + conv
 	}
 	return "shadowob:channel:" + conv + ":" + authorID
+}
+
+func (p *Platform) claimBuddyCollaboration(ctx context.Context, sm shadowMessage, rt channelRuntime) (*buddyCollaborationMetadata, bool) {
+	if sm.ChannelID == "" || p.agentID == "" {
+		return nil, true
+	}
+	if sm.DMChannelID != "" {
+		return nil, true
+	}
+
+	isAuthorBuddy := sm.Author != nil && sm.Author.IsBot
+	mode := "initial"
+	rootMessageID := sm.ID
+	if isAuthorBuddy {
+		if !policyConfigBool(rt.Policy.Config, "replyToBuddy", false) {
+			slog.Debug("shadowob: ignoring Buddy message because replyToBuddy=false", "channel_id", sm.ChannelID, "message_id", sm.ID)
+			return nil, false
+		}
+		if !senderBuddyAllowed(rt.Policy.Config, sm) {
+			slog.Debug("shadowob: ignoring Buddy message because buddy allowlist policy denied it", "channel_id", sm.ChannelID, "message_id", sm.ID)
+			return nil, false
+		}
+		collaboration := messageBuddyCollaboration(sm.Metadata)
+		if collaboration == nil || collaboration.RootMessageID == "" {
+			slog.Debug("shadowob: ignoring Buddy message without collaboration claim", "channel_id", sm.ChannelID, "message_id", sm.ID)
+			return nil, false
+		}
+		mode = "conversation"
+		rootMessageID = collaboration.RootMessageID
+	}
+
+	reqCtx, cancel := requestContext(ctx)
+	claim, err := p.client.claimBuddyReply(reqCtx, claimBuddyReplyInput{
+		ChannelID:        sm.ChannelID,
+		RootMessageID:    rootMessageID,
+		BuddyID:          p.agentID,
+		ReplyToMessageID: sm.ID,
+		MaxTurns:         policyConfigInt(rt.Policy.Config, "maxBuddyTurns", 4),
+		Mode:             mode,
+	})
+	cancel()
+	if err != nil {
+		slog.Debug("shadowob: Buddy collaboration claim failed", "channel_id", sm.ChannelID, "message_id", sm.ID, "mode", mode, "error", err)
+		return nil, false
+	}
+	if claim == nil || !claim.OK {
+		reason := "failed"
+		if claim != nil && claim.Reason != "" {
+			reason = claim.Reason
+		}
+		slog.Debug("shadowob: Buddy collaboration claim skipped message", "channel_id", sm.ChannelID, "message_id", sm.ID, "mode", mode, "reason", reason)
+		return nil, false
+	}
+	collaboration := claim.Metadata.Collaboration
+	if collaboration == nil {
+		collaboration = &buddyCollaborationMetadata{
+			ID:            claim.CollaborationID,
+			RootMessageID: rootMessageID,
+			BuddyID:       p.agentID,
+			Turn:          claim.Turn,
+			Target:        claim.Target,
+			ThreadID:      claim.ThreadID,
+		}
+	}
+	if collaboration.Target == "thread" && collaboration.ThreadID == "" {
+		collaboration.ThreadID = claim.ThreadID
+	}
+	if collaboration.ReplyToID == "" {
+		collaboration.ReplyToID = firstNonEmpty(claim.ReplyToID, sm.ID)
+	}
+	return collaboration, true
 }
 
 func (p *Platform) dispatch(msg *core.Message) {
@@ -747,6 +854,11 @@ func (p *Platform) shouldSkipMessage(sm shadowMessage) bool {
 	}
 	if sm.ID != "" {
 		p.mu.Lock()
+		p.sweepSentMessagesLocked()
+		if _, ok := p.sentMessageIDs[sm.ID]; ok {
+			p.mu.Unlock()
+			return true
+		}
 		p.sweepReceivedLocked()
 		if _, ok := p.receivedMsgIDs[sm.ID]; ok {
 			p.mu.Unlock()
@@ -788,6 +900,75 @@ func (p *Platform) messageMentionsMe(sm shadowMessage) bool {
 		}
 	}
 	return false
+}
+
+func messageBuddyCollaboration(metadata map[string]any) *buddyCollaborationMetadata {
+	if metadata == nil {
+		return nil
+	}
+	if collaboration := decodeBuddyCollaboration(metadata["collaboration"]); collaboration != nil {
+		return collaboration
+	}
+	if custom, ok := metadata["custom"].(map[string]any); ok {
+		return decodeBuddyCollaboration(custom["collaboration"])
+	}
+	return nil
+}
+
+func decodeBuddyCollaboration(value any) *buddyCollaborationMetadata {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var collaboration buddyCollaborationMetadata
+	if err := json.Unmarshal(data, &collaboration); err != nil {
+		return nil
+	}
+	if collaboration.ID == "" || collaboration.RootMessageID == "" {
+		return nil
+	}
+	return &collaboration
+}
+
+func formatBuddyCollaborationPrompt(collaboration *buddyCollaborationMetadata) string {
+	if collaboration == nil {
+		return ""
+	}
+	lines := []string{
+		"Shadow Buddy collaboration context:",
+		"- Collaboration id: " + collaboration.ID,
+		"- Root message id: " + collaboration.RootMessageID,
+		fmt.Sprintf("- This Buddy turn: %d", collaboration.Turn),
+	}
+	if collaboration.Target != "" {
+		lines = append(lines, "- Platform delivery target: "+collaboration.Target)
+	}
+	if collaboration.ThreadID != "" {
+		lines = append(lines, "- Platform thread id: "+collaboration.ThreadID)
+	}
+	if collaboration.ReplyDensity != "" {
+		lines = append(lines, "- Suggested reply density: "+collaboration.ReplyDensity)
+	}
+	if collaboration.SuggestedTextLimit > 0 {
+		lines = append(lines, fmt.Sprintf("- Suggested text budget: about %d characters; treat this as guidance, not a hard cutoff.", collaboration.SuggestedTextLimit))
+	}
+	lines = append(lines,
+		"- Treat the collaboration claim as permission to speak once, not permission to run tools.",
+		"- The platform may route later collaboration turns into a thread. Do not announce that routing yourself.",
+		"- If you only agree, prefer a structured Shadow reaction action when the runtime exposes one; otherwise stay silent instead of posting acknowledgement text.",
+		"- Keep the public channel IM-friendly: one concise message, no recap unless the user asks.",
+		"- Default reply budget is soft: prefer at most 120 Chinese characters or 2 short bullets, but answer fully when the user explicitly asks for depth.",
+		"- For turn 2 or later, add at most one missing point in one short sentence; if you only agree, do not send a text reply.",
+		"- Match the density of the triggering message. Short chat gets a short reply or no extra reply.",
+		"- Add a distinct point only. If another Buddy already covered it, acknowledge briefly and stop.",
+		"- Do not create memories, skills, files, demos, task cards, or tool runs unless a human explicitly asks for current action.",
+		"- Runtime logs, memory updates, skill views, tool progress, and self-improvement reviews are private implementation events. Never post them as channel messages.",
+		"- If the user says to stop, stay quiet, not implement, or just discuss, comply immediately and do not continue the action chain.",
+	)
+	return strings.Join(lines, "\n")
 }
 
 func (p *Platform) interactiveResponseContent(ctx context.Context, sm shadowMessage, response map[string]any) string {
@@ -1020,7 +1201,7 @@ func (p *Platform) sendAttachment(ctx context.Context, rc replyContext, data []b
 	}
 
 	content := "\u200B"
-	metadata := p.deliveryMetadata(nil)
+	metadata := metadataWithCollaboration(p.deliveryMetadata(nil), rc.collaboration)
 	p.mu.Lock()
 	if id := deliveryID(metadata); id != "" {
 		p.sentDeliveryIDs[id] = time.Now()
@@ -1030,9 +1211,11 @@ func (p *Platform) sendAttachment(ctx context.Context, rc replyContext, data []b
 
 	sendCtx, sendCancel := requestContext(ctx)
 	defer sendCancel()
+	var msg *shadowMessage
+	replyToID := firstNonEmpty(rc.replyToID, rc.messageID)
 	if rc.dmChannelID != "" {
-		_, err = p.client.sendDMMessage(sendCtx, rc.dmChannelID, content, sendMessageOptions{
-			ReplyToID:   rc.messageID,
+		msg, err = p.client.sendDMMessage(sendCtx, rc.dmChannelID, content, sendMessageOptions{
+			ReplyToID:   replyToID,
 			Metadata:    metadata,
 			Attachments: []any{attachment},
 		})
@@ -1040,9 +1223,9 @@ func (p *Platform) sendAttachment(ctx context.Context, rc replyContext, data []b
 		if rc.channelID == "" {
 			return fmt.Errorf("shadowob: empty channel target")
 		}
-		_, err = p.client.sendMessage(sendCtx, rc.channelID, content, sendMessageOptions{
+		msg, err = p.client.sendMessage(sendCtx, rc.channelID, content, sendMessageOptions{
 			ThreadID:    rc.threadID,
-			ReplyToID:   rc.messageID,
+			ReplyToID:   replyToID,
 			Metadata:    metadata,
 			Attachments: []any{attachment},
 		})
@@ -1050,6 +1233,7 @@ func (p *Platform) sendAttachment(ctx context.Context, rc replyContext, data []b
 	if err != nil {
 		return fmt.Errorf("shadowob: send attachment: %w", err)
 	}
+	p.recordSentMessageID(msg)
 	return nil
 }
 
@@ -1242,6 +1426,7 @@ func (p *Platform) sendToReplyContext(ctx context.Context, rc replyContext, cont
 	} else if deliveryID(metadata) == "" {
 		metadata = p.deliveryMetadata(metadata)
 	}
+	metadata = metadataWithCollaboration(metadata, rc.collaboration)
 	if id := deliveryID(metadata); id != "" {
 		p.mu.Lock()
 		p.sentDeliveryIDs[id] = time.Now()
@@ -1250,7 +1435,7 @@ func (p *Platform) sendToReplyContext(ctx context.Context, rc replyContext, cont
 	}
 	replyToID := ""
 	if reply {
-		replyToID = rc.messageID
+		replyToID = firstNonEmpty(rc.replyToID, rc.messageID)
 	}
 	reqCtx, cancel := requestContext(ctx)
 	defer cancel()
@@ -1274,7 +1459,32 @@ func (p *Platform) sendToReplyContext(ctx context.Context, rc replyContext, cont
 	if err != nil {
 		return nil, fmt.Errorf("shadowob: send message: %w", err)
 	}
+	p.recordSentMessageID(msg)
 	return msg, nil
+}
+
+func metadataWithCollaboration(metadata map[string]any, collaboration *buddyCollaborationMetadata) map[string]any {
+	if collaboration == nil {
+		return metadata
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["collaboration"] = collaboration
+	return metadata
+}
+
+func (p *Platform) recordSentMessageID(msg *shadowMessage) {
+	if msg == nil || msg.ID == "" {
+		return
+	}
+	p.mu.Lock()
+	if p.sentMessageIDs == nil {
+		p.sentMessageIDs = make(map[string]time.Time)
+	}
+	p.sentMessageIDs[msg.ID] = time.Now()
+	p.sweepSentMessagesLocked()
+	p.mu.Unlock()
 }
 
 func (p *Platform) deliveryMetadata(extra map[string]any) map[string]any {
@@ -1301,6 +1511,19 @@ func (p *Platform) sweepDeliveriesLocked() {
 	for id, ts := range p.sentDeliveryIDs {
 		if ts.Before(cutoff) {
 			delete(p.sentDeliveryIDs, id)
+		}
+	}
+}
+
+func (p *Platform) sweepSentMessagesLocked() {
+	if time.Since(p.lastSentMsgSweep) < time.Minute {
+		return
+	}
+	p.lastSentMsgSweep = time.Now()
+	cutoff := time.Now().Add(-10 * time.Minute)
+	for id, ts := range p.sentMessageIDs {
+		if ts.Before(cutoff) {
+			delete(p.sentMessageIDs, id)
 		}
 	}
 }
@@ -1536,6 +1759,76 @@ func cleanStringList(values []string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+func policyConfigBool(config map[string]any, key string, def bool) bool {
+	if config == nil {
+		return def
+	}
+	value, ok := config[key]
+	if !ok {
+		return def
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "on":
+			return true
+		case "false", "0", "no", "off":
+			return false
+		}
+	}
+	return def
+}
+
+func policyConfigInt(config map[string]any, key string, def int) int {
+	if config == nil {
+		return def
+	}
+	if n, ok := numberInt(config[key]); ok {
+		return n
+	}
+	return def
+}
+
+func policyConfigStringSet(config map[string]any, key string) map[string]bool {
+	if config == nil {
+		return nil
+	}
+	values := optionStringList(config, key)
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(values))
+	for _, value := range values {
+		out[value] = true
+	}
+	return out
+}
+
+func senderBuddyAllowed(config map[string]any, sm shadowMessage) bool {
+	candidates := []string{messageAuthorID(sm)}
+	if sm.Author != nil {
+		candidates = append(candidates, sm.Author.ID, sm.Author.Username)
+	}
+	if blacklist := policyConfigStringSet(config, "buddyBlacklist"); len(blacklist) > 0 {
+		for _, candidate := range candidates {
+			if blacklist[candidate] {
+				return false
+			}
+		}
+	}
+	if whitelist := policyConfigStringSet(config, "buddyWhitelist"); len(whitelist) > 0 {
+		for _, candidate := range candidates {
+			if whitelist[candidate] {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 var getenv = os.Getenv
