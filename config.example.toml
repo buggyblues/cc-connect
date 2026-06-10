@@ -23,6 +23,17 @@
 # - "" (empty/not set): Auto-detect from user's first message / 留空自动检测
 # language = "en"
 
+# Shell for /shell commands, cron exec, hooks, and webhook exec.
+# /shell 命令、cron exec、hooks 和 webhook exec 使用的 shell。
+# Default / 默认: "sh" (Unix) or "powershell.exe" (Windows)
+# Supported / 支持: sh, bash, zsh, fish, cmd, powershell, pwsh
+# shell = "/bin/zsh"
+
+# Init command prepended to every shell command. Useful for sourcing profiles
+# so user-defined functions and aliases are available.
+# 初始化命令，会添加到每条 shell 命令前面。用于加载 profile，使自定义函数和别名可用。
+# shell_profile = "source ~/.zshrc"
+
 # Session data storage directory (default: ~/.cc-connect)
 # Stores conversation history and session state as JSON files.
 # 会话数据存储目录（默认 ~/.cc-connect），以 JSON 文件保存对话历史和会话状态。
@@ -189,7 +200,6 @@ level = "info" # debug, info, warn, error
 # # profile. Secrets belong in the target user's ~/.claude/settings.json
 # # env block, NOT here.
 # run_as_env = ["PGSSLROOTCERT", "PGSSLMODE"]
-
 # =============================================================================
 # Streaming Preview / 流式预览
 # =============================================================================
@@ -255,12 +265,17 @@ level = "info" # debug, info, warn, error
 # =============================================================================
 # Relay Settings / Relay 设置
 # =============================================================================
-# Bot-to-bot relay timeout. Controls how long cc-connect waits for the target
-# bot to finish responding during `cc-connect relay send`.
-# Bot 间 relay 超时。控制 `cc-connect relay send` 时等待目标 bot 完成回复的最长时间。
+# Bot-to-bot relay settings. timeout_secs controls how long cc-connect waits for
+# the target bot to finish responding during `cc-connect relay send`.
+# visibility controls the extra group-chat echo only; the caller still receives
+# the target response from the relay command when visibility is "none".
+# Bot 间 relay 设置。timeout_secs 控制 `cc-connect relay send` 等待目标 bot
+# 完成回复的最长时间。visibility 只控制群内额外可见消息；设为 "none" 时调用方
+# 仍会从 relay 命令拿到目标回复。
 
 # [relay]
 # timeout_secs = 120        # Max relay wait in seconds; 0 = disabled (default: 120) / relay 最大等待秒数；0 = 禁用（默认 120）
+# visibility = "full"       # "full" (default), "summary", or "none" / 群内可见消息：完整、摘要或不显示
 
 # =============================================================================
 # Auto-Compress / 自动压缩
@@ -440,6 +455,10 @@ level = "info" # debug, info, warn, error
 # enabled  = true
 # provider = "qwen"          # "qwen" | "openai" | "minimax" | "mimo" | "espeak" | "pico" | "edge"
 # voice    = "Cherry"        # default voice / 默认音色（千问支持：Cherry/Serena/Ethan/Chelsie 等；MiMo 支持：mimo_default/冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean）
+# voice_id = ""              # optional alias for voice, useful for MiniMax voice IDs / 可选，MiniMax 音色 ID 可写这里
+# speed    = 0               # optional speed multiplier; 0 = provider default; valid range is provider-specific
+#                            # 可选语速；0 表示服务商默认；有效范围取决于具体 provider
+# language_type = ""         # optional provider-specific language hint / 可选语言提示
 # tts_mode = "voice_only"    # "voice_only" (default) | "always"
 # max_text_len = 0           # max rune count before skipping TTS; 0 = no limit
 #                            # 超过此长度则跳过 TTS；0 表示不限制
@@ -463,9 +482,22 @@ level = "info" # debug, info, warn, error
 # # 备选：MiniMax TTS（T2A v2 流式 API）
 # # Docs: https://platform.minimaxi.com/document/T2A%20V2
 # [tts.minimax]
-# api_key  = "your-minimax-api-key"
-# base_url = ""              # optional: default "https://api.minimax.io" / 留空使用默认地址
+# api_key  = "your-minimax-api-key" # optional: if empty, cc-connect reads ~/.cc-connect/config/minimax.json
+# base_url = ""              # optional: default "https://api.minimaxi.com" / 留空使用默认地址
 # model    = "speech-2.8-hd" # "speech-2.8-hd" | "speech-2.8"
+# config_file = ""           # optional MiniMax JSON config path; default data_dir/config/minimax.json
+#
+# # Per-project/agent voice overrides. Keys match [[projects]].name.
+# # 每个项目/Agent 可单独覆盖音色；key 与 [[projects]].name 一致。
+# # Agent tool command: cc-connect send --tts <text>
+# # Agent 工具命令：cc-connect send --tts <文本>
+# [tts.agents.assistant]
+# voice_id = "Chinese (Mandarin)_Crisp_Girl"
+# speed = 0.98
+#
+# [tts.agents.reviewer]
+# voice_id = "Chinese (Mandarin)_Gentle_Senior"
+# speed = 0.96
 #
 # # Alternative: Xiaomi MiMo-V2.5-TTS (OpenAI-compatible chat completions style)
 # # 备选：小米 MiMo-V2.5-TTS（OpenAI 兼容的 chat completions 风格）
@@ -649,10 +681,12 @@ level = "info" # debug, info, warn, error
 
 [[projects]]
 name = "my-backend"
-# show_context_indicator = false  # Hide the “[ctx: ~N%]” suffix on assistant replies (default: true / show)
-#                                   # 不在助手回复末尾显示「[ctx: ~N%]」上下文占用提示（默认 true 显示）
-# reply_footer = false             # Hide the Codex-like footer on assistant replies (default: true / show)
-#                                   # 不在助手回复底部显示类似 Codex 的状态行（默认 true 显示）
+# reply_footer = false             # Master toggle for the per-turn reply footer (default: true / show)
+#                                   # 每条助手回复底部状态 footer 总开关（默认 true 显示）
+# show_context_indicator = false   # Hide the footer's first line: model · [effort ·] out/in/cw/cr · ctx % (default: true)
+#                                   # 隐藏 footer 第一行：model · [effort ·] out/in/cw/cr · ctx %（默认 true 显示）
+# show_workdir_indicator = false   # Hide the footer's second line: workspace directory (default: true)
+#                                   # 隐藏 footer 第二行：工作区目录（默认 true 显示）
 # disabled_commands = ["restart", "upgrade", "cron"]  # Disable specific commands for this project
 #                                                     # 禁用该项目的指定命令
 #
@@ -663,8 +697,16 @@ name = "my-backend"
 # filter_external_sessions：为 true 时，/list /switch /delete 仅显示由 cc-connect 创建的会话，
 # 隐藏在相同 work_dir 下通过直接 CLI 创建的会话。默认 false = 显示 agent 的全部会话。
 #
-# admin_from controls who can run privileged commands (/dir, /shell, /restart, /upgrade, /commands addexec).
-# admin_from 控制谁可以执行特权命令（/dir, /shell, /restart, /upgrade, /commands addexec）。
+# shell = "/bin/fish"                        # Per-project shell override / 项目级 shell 覆盖
+# shell_profile = "source ~/.config/fish/config.fish"  # Per-project shell profile / 项目级 shell profile
+#
+# admin_from controls who can run privileged commands (/dir, /shell, /restart, /upgrade, /commands addexec, /cron addexec).
+# admin_from 控制谁可以执行特权命令（/dir, /shell, /restart, /upgrade, /commands addexec, /cron addexec）。
+#
+# admin_from must be defined at the [[projects]] level.
+# Do NOT put it under [projects.platforms.options], or it will be ignored.
+# admin_from 必须写在 [[projects]] 这一层。
+# 不要写到 [projects.platforms.options] 下面，否则会被忽略。
 #
 # 💡 TIP: Send /whoami or /status to the bot to get your User ID for allow_from / admin_from.
 # 💡 提示：向机器人发送 /whoami 或者 /status  即可获取你的 User ID，用于填写 allow_from / admin_from。
@@ -763,7 +805,17 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # disallowed_tools = ["WebSearch", "WebFetch"]
 
 # Optional: specify a custom system prompt / 可选：指定自定义系统提示
+# Replaces Claude's default system prompt (passed via --system-prompt).
+# 替换 Claude 默认系统提示（通过 --system-prompt 传入）。
 # system_prompt = "You are a helpful AI assistant that specializes in Python development."
+
+# Optional: append extra text to the system prompt / 可选：向系统提示追加额外内容
+# Keeps Claude's default system prompt and appends this text (via --append-system-prompt).
+# Use this instead of system_prompt when you want to add instructions without
+# discarding Claude's defaults. Can be combined with system_prompt.
+# 保留 Claude 默认系统提示，并在其后追加本内容（通过 --append-system-prompt）。
+# 想在不丢弃默认提示的前提下补充指令时用它；可与 system_prompt 同时使用。
+# append_system_prompt = "Always respond in Chinese and prefer concise answers."
 
 # Optional: specify a model / 可选：指定模型
 # model = "claude-sonnet-4-20250514"
@@ -847,10 +899,11 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # model = "deepseek-ai/DeepSeek-V3"
 # thinking = "disabled"
 #
-# # MiniMax — OpenAI-compatible provider with 1M context window
-# # MiniMax — 兼容 OpenAI 接口的大模型，支持 1M 超长上下文
+# # MiniMax — OpenAI-compatible agent provider with 1M context window
+# # MiniMax — 兼容 OpenAI 接口的大模型 Agent provider，支持 1M 超长上下文
 # # Models: MiniMax-M2.7 (flagship, 1M context), MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed
 # # Docs: https://platform.minimaxi.com
+# # China-region accounts may use https://api.minimaxi.com/v1 / 中国区账号可使用 https://api.minimaxi.com/v1
 # [[projects.agent.providers]]
 # name = "minimax"
 # api_key = "your-minimax-api-key"
@@ -989,6 +1042,10 @@ app_secret = "your-feishu-app-secret"
 # client_secret = "your-dingtalk-client-secret"
 # allow_from = "*"  # Allowed staff IDs / 允许的员工 ID
 # share_session_in_channel = false  # If true, all users in a group share one agent session / 群聊共享会话
+# reaction_emoji = "🤔Thinking"  # Emotion on incoming messages (default: "🤔Thinking"); set to "none" to disable
+#                                 # 收到消息时添加的表情回复（默认 "🤔Thinking"）；设为 "none" 可禁用
+# done_emoji = "none"             # Emotion when agent finishes a reply (e.g. "🥳Done"); set to "none" to disable
+#                                 # Agent 完成回复后添加的表情回复（如 "🥳Done"）；设为 "none" 可禁用
 
 # WPS Xiezuo / WPS 协作 (uncomment to enable / 取消注释以启用)
 # 1. Create a WPS Open Platform app and enable event WebSocket delivery
@@ -1022,6 +1079,9 @@ app_secret = "your-feishu-app-secret"
 # token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 # allow_from = "*"  # Allowed Telegram user IDs, e.g. "123456789,987654321"; "*" = all
 #                   # 允许的 Telegram 用户 ID，如 "123456789,987654321"；"*" 表示所有
+# proxy = "http://127.0.0.1:7890"  # Optional HTTP/SOCKS5 proxy for Telegram Bot API / 可选 HTTP/SOCKS5 代理
+# proxy_username = ""              # Optional proxy auth username / 代理用户名
+# proxy_password = ""              # Optional proxy auth password / 代理密码
 # group_reply_all = false  # If true, respond to ALL group messages without @mention / 设为 true 群聊无需 @ 也响应
 # share_session_in_channel = false  # If true, all users in a group share one agent session / 群聊共享会话
 # enable_reactions = false  # If true, add ⚡ reaction to incoming messages / 设为 true 收到消息时添加 ⚡ 表情
@@ -1089,6 +1149,11 @@ app_secret = "your-feishu-app-secret"
 # app_token = "xapp-your-app-level-token"
 # allow_from = "*"  # Allowed Slack user IDs / 允许的 Slack 用户 ID
 # share_session_in_channel = false  # If true, all users in a channel share one agent session / 频道共享会话
+# session_scope = "user"  # Session granularity: "user" (default, per channel+user) |
+#                         # "channel" (one session per channel, same as share_session_in_channel) |
+#                         # "thread" (one session per Slack thread — a new top-level message starts
+#                         #  a fresh session, replies in the same thread continue it).
+#                         # 会话粒度："user"(默认) | "channel"(整个频道一个会话) | "thread"(每个 Slack 话题串一个会话)
 
 # Discord (uncomment to enable / 取消注释以启用)
 # 1. Create an app at https://discord.com/developers/applications / 创建应用
@@ -1126,6 +1191,8 @@ app_secret = "your-feishu-app-secret"
 #                           # 设为 true 时，cc-connect 会在支持 thread 的 Discord 频道内按 thread 隔离会话
 # progress_style = "legacy"  # Progress rendering: legacy | compact | card / 进度展示方式：legacy | compact | card
 #                            # card = one editable Discord embed progress card / card = 单条可编辑的 Discord 嵌入式进度卡
+# reply_hud = false  # If true, append final-reply HUD line (model/context/tokens) in Discord only
+#                    # 设为 true 时，仅在 Discord 最终回复末尾附加 HUD（模型/上下文/tokens）
 # respond_to_at_everyone_and_here = false  # If true, treat @everyone/@here as a direct mention so the bot responds
 #                              # 设为 true 时，将 @everyone/@here 视为直接 @ 机器人，使机器人响应
 # proxy = "http://127.0.0.1:7890"  # Optional HTTP/SOCKS5 proxy for Discord API & Gateway / 可选代理
@@ -1430,6 +1497,9 @@ app_secret = "your-feishu-app-secret"
 # [projects.platforms.options]
 # ws_url = "ws://127.0.0.1:3001"  # NapCat Forward WebSocket URL
 # token = ""                       # optional: access_token / 可选鉴权 token
+# http_url = ""                    # optional: OneBot HTTP API URL for file operations, e.g. "http://127.0.0.1:3000"
+#                                  # Required for SendFile. Useful when OneBot runs in WSL/Docker.
+#                                  # 可选：OneBot HTTP API 地址，用于文件发送。OneBot 在 WSL/Docker 中时必须配置。
 # allow_from = "*"                 # allowed QQ user IDs, e.g. "12345,67890" or "*" for all
 #                                  # 允许的 QQ 号，如 "12345,67890"，"*" 表示所有
 # share_session_in_channel = false  # If true, all users in a group share one agent session / 群聊共享会话
@@ -1454,6 +1524,12 @@ app_secret = "your-feishu-app-secret"
 #                       # 允许的用户 openid，如 "OPEN_ID_1,OPEN_ID_2"；"*" 表示所有
 # share_session_in_channel = false  # If true, all users in a group share one agent session / 群聊共享会话
 # markdown_support = false  # Enable Markdown messages (msg_type: 2). Requires bot permission. / 启用 Markdown 消息（msg_type: 2）。需要机器人具备该权限。
+# intents = 100663296  # WebSocket identify intents. Default: (1<<25)|(1<<26) = 100663296
+#                       #   bit 25 (33554432): GROUP_AT_MESSAGE_CREATE — 群聊 @ 消息
+#                       #   bit 26 (67108864): INTERACTION_CREATE — 按键交互回调（inline keyboard 必需）
+#                       #   If you override this, include both bits for full functionality.
+#                       #   Override 时需包含 bit 25+26，否则群聊 @消息或按键交互可能失效。
+#                       #   QQ 开放平台需申请对应 Intent 权限。
 
 # =============================================================================
 # Project 5: Using Qoder CLI / 项目 5：使用 Qoder CLI (uncomment to enable / 取消注释以启用)
@@ -1509,6 +1585,12 @@ app_secret = "your-feishu-app-secret"
 # startup_wait_ms = 2000       # milliseconds to wait after init_command before accepting messages (default: 2000 when init_command is set)
 # prompt_pattern = '[\$#>%]\s*$'  # regex to detect shell prompt = command done (default shown)
 # poll_interval_ms = 200       # output poll interval in milliseconds (default: 200)
+# window_per_session = false   # When true, each cc-connect session gets its OWN tmux window
+#                              # (own init_command/agent instance) instead of sharing one pane.
+#                              # Enable this for true isolation when the platform splits sessions
+#                              # (e.g. Slack session_scope = "thread"); otherwise all sessions
+#                              # share a single agent and their conversations interleave.
+#                              # 为 true 时每个会话独占一个 tmux 窗口（独立 agent 实例），实现真正隔离。
 #
 # --- Running Claude Code inside tmux ---
 # Set init_command to start claude automatically; adjust prompt_pattern to match
@@ -1547,6 +1629,9 @@ app_secret = "your-feishu-app-secret"
 # Mode options / 模式说明:
 # - "default": Standard mode / 标准模式
 # - "yolo":    Auto-approve all tool calls / 自动批准所有工具调用
+#
+# Optional: pass --agent to opencode (for plugin-defined agents) / 可选：传递 --agent 给 opencode（适用于插件定义的 agent）
+# agent = "Sisyphus - Ultraworker"
 #
 # Optional: specify a model (provider/model format) / 可选：指定模型
 # model = "anthropic/claude-sonnet-4-20250514"
@@ -1636,6 +1721,18 @@ app_secret = "your-feishu-app-secret"
 # --- Example: OpenClaw (Gateway-backed ACP bridge) ---
 # Docs: https://docs.openclaw.ai/cli/acp
 # Install the OpenClaw CLI, run a Gateway, then point cc-connect at `openclaw acp`.
+#
+# IMPORTANT: Remote OpenClaw requires pairing authorization before use!
+#
+# For remote gateways, you MUST complete the pairing process:
+#   1. Start OpenClaw gateway: openclaw acp --url wss://your-gateway:18789
+#   2. In another terminal, run: openclaw pair
+#   3. Approve the pairing request in the OpenClaw UI
+#   4. Now cc-connect can communicate with the authorized gateway
+#
+# Without pairing, OpenClaw will return empty responses ("pairing required" error).
+# Reference: https://zhuanlan.zhihu.com/p/2005687480976970296
+#
 # [[projects]]
 # name = "openclaw-acp"
 #
@@ -1785,6 +1882,37 @@ app_secret = "your-feishu-app-secret"
 # token = "your-telegram-bot-token"
 
 # =============================================================================
+# Project: Using GitHub Copilot / 项目：使用 GitHub Copilot (uncomment to enable / 取消注释以启用)
+# =============================================================================
+# Prerequisites / 前置条件:
+#   - Install GitHub Copilot CLI: https://docs.github.com/copilot/how-tos/copilot-cli
+#     Example: brew install github/copilot/copilot
+#   - copilot login (GitHub authentication)
+#
+# GitHub Copilot CLI uses --headless --stdio for JSON-RPC communication.
+# GitHub Copilot CLI 使用 --headless --stdio 进行 JSON-RPC 通信。
+# The generic ACP configuration above is also supported; this first-class agent
+# adds cc-connect model/mode switching plus session list/delete integration.
+
+# [[projects]]
+# name = "my-copilot-project"
+#
+# [projects.agent]
+# type = "copilot"
+#
+# [projects.agent.options]
+# work_dir = "/path/to/code"
+# model = "gpt-4.1"           # or claude-sonnet-4.6, o3-mini, etc.
+# mode = "default"            # "default" or "bypassPermissions" (yolo)
+# cli_path = "copilot"        # CLI binary name or path (default: "copilot")
+#
+# [[projects.platforms]]
+# type = "telegram"
+#
+# [projects.platforms.options]
+# token = "your-telegram-bot-token"
+
+# =============================================================================
 # Project 8: Another example / 项目 8：更多示例 (uncomment to enable / 取消注释以启用)
 # =============================================================================
 
@@ -1804,3 +1932,36 @@ app_secret = "your-feishu-app-secret"
 #
 # [projects.platforms.options]
 # token = "your-discord-bot-token"
+
+# =============================================================================
+# Project 9: Using Antigravity CLI / 项目 9：使用 Antigravity CLI (uncomment to enable / 取消注释以启用)
+# =============================================================================
+# Requires: agy installed locally (refer to https://antigravity.google/docs/cli-overview)
+# 需要安装：本地已安装 agy 命令 (参考 https://antigravity.google/docs/cli-overview)
+# Antigravity CLI uses `agy -p` under the hood.
+# Antigravity CLI 底层使用 `agy -p` 命令。
+#
+# [[projects]]
+# name = "my-antigravity-project"
+#
+# [projects.agent]
+# type = "antigravity"
+#
+# [projects.agent.options]
+# work_dir = "/path/to/project"
+# mode = "default"  # "default" | "yolo" | "plan"
+# cmd = "agy"      # CLI binary name (default: "agy") / CLI 二进制名称（默认 "agy"）
+# timeout_mins = 30  # Timeout per conversation turn (minutes) / 每次对话超时时间（分钟）
+#
+# Mode options / 模式说明:
+# - "default":   Prompt for approval on each tool use / 每次工具调用都需要确认
+# - "yolo":      Auto-approve all tool calls (--dangerously-skip-permissions) / 自动批准所有工具调用
+# - "plan":      Read-only plan mode with terminal sandbox constraints (--sandbox) / 只读沙箱规划模式
+#
+# Optional: specify a model / 可选：指定模型
+# model = "gemini-3.1-pro-preview"
+#
+# # Provider with API key / 使用 API Key 的 Provider
+# [[projects.agent.providers]]
+# name = "google"
+# api_key = "your-gemini-api-key"    # GEMINI_API_KEY

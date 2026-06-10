@@ -33,12 +33,14 @@ type Agent struct {
 	model                string
 	mode                 string
 	cmd                  string // CLI binary name, default "opencode"
+	agentName            string // passed as --agent to opencode (for plugin-defined agents)
 	providers            []core.ProviderConfig
 	activeIdx            int
 	sessionEnv           []string
 	modelCachePath       string
 	persistentModelCache *opencodePersistentModelCache
 	refreshingModelCache bool
+	refreshWg            sync.WaitGroup // tracks in-flight background model-cache refresh goroutines
 	mu                   sync.RWMutex
 }
 
@@ -69,6 +71,7 @@ func New(opts map[string]any) (core.Agent, error) {
 	if cmd == "" {
 		cmd = "opencode"
 	}
+	agentName, _ := opts["agent"].(string) // --agent flag for plugin-defined agents (#1210)
 	ccDataDir, _ := opts["cc_data_dir"].(string)
 	ccProject, _ := opts["cc_project"].(string)
 	modelCachePath := opencodeProjectModelCachePath(ccDataDir, ccProject)
@@ -86,6 +89,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		model:                model,
 		mode:                 mode,
 		cmd:                  cmd,
+		agentName:            agentName,
 		activeIdx:            -1,
 		modelCachePath:       modelCachePath,
 		persistentModelCache: persistentModelCache,
@@ -341,9 +345,11 @@ func (a *Agent) startPersistentModelRefresh(snapshot opencodeModelDiscoverySnaps
 		return
 	}
 	a.refreshingModelCache = true
+	a.refreshWg.Add(1)
 	a.mu.Unlock()
 
 	go func() {
+		defer a.refreshWg.Done()
 		defer func() {
 			a.mu.Lock()
 			a.refreshingModelCache = false
@@ -459,6 +465,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	mode := a.mode
 	cmd := a.cmd
 	workDir := a.workDir
+	agentName := a.agentName
 	extraEnv := a.providerEnvLocked()
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
@@ -468,7 +475,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	}
 	a.mu.Unlock()
 
-	return newOpencodeSession(ctx, cmd, workDir, model, mode, sessionID, extraEnv)
+	return newOpencodeSession(ctx, cmd, workDir, model, mode, agentName, sessionID, extraEnv)
 }
 
 // ListSessions runs `opencode session list` and parses the JSON output.

@@ -6,6 +6,12 @@
 - Point the npm installer at the ShadowOB fork release assets instead of upstream `chenhg5/cc-connect`.
 - Add a GitHub Actions release workflow that can build and upload all platform archives from a tag.
 
+### New Features
+- **QQ Bot inline keyboard**: add support for inline keyboard buttons and INTERACTION_CREATE events. Permission requests now render as clickable buttons instead of text replies. Requires enabling the INTERACTION capability (bit 26) in the QQ Open Platform bot settings.
+
+### ⚠️ QQ Bot Intent Configuration Change
+The default intents for QQ Bot now include `INTERACTION_CREATE` (bit 26, value `1<<26`). If you previously set a custom `intents` value without this bit, inline keyboard buttons will not work — update your `intents` to include bit 26. If you use the default intents, no action is needed. See `config.example.toml` for the new `intents` option.
+
 ## v1.3.3-beta.6 (2026-05-31)
 
 ### New Features

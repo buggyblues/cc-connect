@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+// UnauthorizedAccessMessage is safe to show to an inbound sender when the
+// platform boundary rejects their identity. Keep it user-facing: do not mention
+// allow_from, user IDs, or chat IDs.
+const UnauthorizedAccessMessage = "角色未授权，请联系管理员添加权限。"
+
 // MergeEnv returns base env with entries from extra overriding same-key entries.
 // This prevents duplicate keys (e.g. two PATH entries) which cause the override
 // to be silently ignored on Linux (getenv returns the first match).
@@ -180,6 +185,21 @@ type Message struct {
 	ReplyCtx     any                 // platform-specific context needed for replying
 	FromVoice    bool                // true if message originated from voice transcription
 	ModeOverride string              // if set, temporarily override agent permission mode for this message
+	// IsPermissionResponse is set by inline-button / card-action paths in
+	// platforms when a synthesized message is forwarded as a permission
+	// decision (e.g. Telegram handleCallbackQuery for perm:allow/deny,
+	// Feishu onCardAction, QQBot interaction button, bridge card_action).
+	// The engine uses this flag to drop STALE callbacks silently when no
+	// matching pending request exists, instead of letting the literal
+	// "allow"/"deny" string reach the agent prompt stream. Plain text
+	// "allow"/"deny" typed by a real user must NOT set this flag — they
+	// continue to flow through the regular message handler.
+	IsPermissionResponse bool
+	// UserMessageTimeMs is the platform message creation time in Unix milliseconds
+	// when known (e.g. Feishu im.message.message_received create_time). Used to
+	// drop late redeliveries that reuse a new message_id but an older create_time
+	// than a message already processed. Zero means unset (no ordering hint).
+	UserMessageTimeMs int64
 }
 
 // EventType distinguishes different kinds of agent output.
@@ -225,10 +245,12 @@ type Event struct {
 	Questions    []UserQuestion // populated when ToolName == "AskUserQuestion"
 	Done         bool
 	Error        error
-	InputTokens  int // token usage from agent result events
-	OutputTokens int
-	Metadata     map[string]any // optional metadata from agent (e.g. compaction_continue)
-	Synthetic    bool           // true if this is a synthetic/generated message (not from real user)
+	InputTokens              int // token usage from agent result events
+	OutputTokens             int
+	CacheCreationInputTokens int            // cache-write tokens (new content written to cache)
+	CacheReadInputTokens     int            // cache-read tokens (prior context retrieved from cache)
+	Metadata                 map[string]any // optional metadata from agent (e.g. compaction_continue)
+	Synthetic                bool           // true if this is a synthetic/generated message (not from real user)
 }
 
 // HistoryEntry is one turn in a conversation.
