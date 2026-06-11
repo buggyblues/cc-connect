@@ -642,6 +642,98 @@ func TestShadowClientSendMessageWithToken(t *testing.T) {
 	}
 }
 
+func TestReconstructReplyCtxTaskExplicitThreadKey(t *testing.T) {
+	var sendBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/channels/ch1/messages":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&sendBody); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(shadowMessage{ID: "reply-1", ChannelID: "ch1", ThreadID: "thread-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	replyCtx, err := p.ReconstructReplyCtx("shadowob:task:channel:ch1:thread:thread-1:message:root-1:card:card-1")
+	if err != nil {
+		t.Fatalf("ReconstructReplyCtx: %v", err)
+	}
+	rc, ok := replyCtx.(replyContext)
+	if !ok {
+		t.Fatalf("reply context type = %T", replyCtx)
+	}
+	if rc.channelID != "ch1" || rc.threadID != "thread-1" || rc.replyToID != "root-1" {
+		t.Fatalf("reply context = %#v", rc)
+	}
+	if err := p.Reply(context.Background(), replyCtx, "done"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if sendBody["threadId"] != "thread-1" || sendBody["replyToId"] != "root-1" {
+		t.Fatalf("send body = %#v", sendBody)
+	}
+}
+
+func TestReconstructReplyCtxTaskLegacyWorkspaceKeyResolvesMessage(t *testing.T) {
+	var requestedMessage bool
+	var sendBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/messages/root-1":
+			requestedMessage = true
+			_ = json.NewEncoder(w).Encode(shadowMessage{
+				ID:        "root-1",
+				ChannelID: "ch1",
+				Metadata: map[string]any{
+					"cards": []any{
+						map[string]any{
+							"kind":     "task",
+							"id":       "card-1",
+							"threadId": "thread-1",
+						},
+					},
+				},
+			})
+		case "/api/channels/ch1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&sendBody); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(shadowMessage{ID: "reply-1", ChannelID: "ch1", ThreadID: "thread-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	replyCtx, err := p.ReconstructReplyCtx("shadowob:task:workspace-1:root-1:card-1")
+	if err != nil {
+		t.Fatalf("ReconstructReplyCtx: %v", err)
+	}
+	if !requestedMessage {
+		t.Fatal("expected message lookup")
+	}
+	rc, ok := replyCtx.(replyContext)
+	if !ok {
+		t.Fatalf("reply context type = %T", replyCtx)
+	}
+	if rc.channelID != "ch1" || rc.threadID != "thread-1" || rc.replyToID != "root-1" {
+		t.Fatalf("reply context = %#v", rc)
+	}
+	if err := p.Reply(context.Background(), replyCtx, "done"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if sendBody["threadId"] != "thread-1" || sendBody["replyToId"] != "root-1" {
+		t.Fatalf("send body = %#v", sendBody)
+	}
+}
+
 func TestShadowClientUsesCurrentDMRoutes(t *testing.T) {
 	var sawList bool
 	var sawSend bool

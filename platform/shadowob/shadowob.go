@@ -1272,9 +1272,130 @@ func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
 			rc.threadID = parts[4]
 		}
 		return rc, nil
+	case "task":
+		return p.reconstructTaskReplyCtx(sessionKey, parts[2:])
 	default:
 		return nil, fmt.Errorf("shadowob: invalid session target %q", parts[1])
 	}
+}
+
+func (p *Platform) reconstructTaskReplyCtx(sessionKey string, parts []string) (replyContext, error) {
+	if rc, ok := parseExplicitTaskReplyCtx(sessionKey, parts); ok {
+		return rc, nil
+	}
+
+	messageID, cardID := parseTaskMessageCardIDs(parts)
+	if messageID == "" {
+		return replyContext{}, fmt.Errorf("shadowob: invalid task session key %q", sessionKey)
+	}
+
+	client := p.client
+	if client == nil {
+		client = newShadowClient(p.serverURL, p.token)
+	}
+	reqCtx, cancel := requestContext(context.Background())
+	message, err := client.getMessage(reqCtx, messageID)
+	cancel()
+	if err != nil {
+		return replyContext{}, fmt.Errorf("shadowob: resolve task message %q: %w", messageID, err)
+	}
+	if message.ChannelID == "" && message.DMChannelID == "" {
+		return replyContext{}, fmt.Errorf("shadowob: task message %q has no reply target", messageID)
+	}
+
+	threadID := firstNonEmpty(message.ThreadID, taskThreadIDFromMessage(message, cardID))
+	return replyContext{
+		channelID:   message.ChannelID,
+		dmChannelID: message.DMChannelID,
+		threadID:    threadID,
+		messageID:   message.ID,
+		replyToID:   message.ID,
+		sessionKey:  sessionKey,
+	}, nil
+}
+
+func parseExplicitTaskReplyCtx(sessionKey string, parts []string) (replyContext, bool) {
+	fields := taskSessionFields(parts)
+	channelID := fields["channel"]
+	threadID := fields["thread"]
+	messageID := firstNonEmpty(fields["message"], fields["root"])
+	if channelID == "" || threadID == "" || messageID == "" {
+		return replyContext{}, false
+	}
+	return replyContext{
+		channelID:  channelID,
+		threadID:   threadID,
+		messageID:  messageID,
+		replyToID:  messageID,
+		sessionKey: sessionKey,
+	}, true
+}
+
+func taskSessionFields(parts []string) map[string]string {
+	fields := map[string]string{}
+	for i := 0; i+1 < len(parts); i += 2 {
+		switch parts[i] {
+		case "channel", "thread", "message", "root", "card":
+			fields[parts[i]] = parts[i+1]
+		default:
+			return fields
+		}
+	}
+	return fields
+}
+
+func parseTaskMessageCardIDs(parts []string) (messageID string, cardID string) {
+	fields := taskSessionFields(parts)
+	if fields["message"] != "" || fields["card"] != "" {
+		return fields["message"], fields["card"]
+	}
+	switch len(parts) {
+	case 2:
+		return parts[0], parts[1]
+	case 3:
+		return parts[1], parts[2]
+	default:
+		return "", ""
+	}
+}
+
+func taskThreadIDFromMessage(message *shadowMessage, cardID string) string {
+	if message == nil || len(message.Metadata) == 0 {
+		return ""
+	}
+	cards, ok := message.Metadata["cards"].([]any)
+	if !ok {
+		return ""
+	}
+	for _, raw := range cards {
+		card, ok := raw.(map[string]any)
+		if !ok || card["kind"] != "task" {
+			continue
+		}
+		if cardID != "" && card["id"] != cardID {
+			continue
+		}
+		if threadID := stringMapValue(card, "threadId", "taskThreadId"); threadID != "" {
+			return threadID
+		}
+		for _, key := range []string{"data", "target"} {
+			if nested, ok := card[key].(map[string]any); ok {
+				if threadID := stringMapValue(nested, "threadId", "taskThreadId"); threadID != "" {
+					return threadID
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func stringMapValue(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := values[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (p *Platform) sendToReplyContext(ctx context.Context, rc replyContext, content string, reply bool, metadata map[string]any) (*shadowMessage, error) {
