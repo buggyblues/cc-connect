@@ -105,6 +105,49 @@ func TestSessionManager_SwitchNotFound(t *testing.T) {
 	}
 }
 
+func TestSessionManager_ForkSession(t *testing.T) {
+	sm := NewSessionManager("")
+	parent := sm.NewSession("user1", "parent")
+	parent.SetAgentSessionID("agent-parent", "claudecode")
+	parent.AddHistory("user", "build this")
+	parent.AddHistory("assistant", "working")
+
+	child, source, err := sm.ForkSession("user1", parent.ID, "child", true)
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	if source.ID != parent.ID {
+		t.Fatalf("source ID = %q, want %q", source.ID, parent.ID)
+	}
+	if child.ID == parent.ID {
+		t.Fatal("child should be a new session")
+	}
+	if child.GetName() != "child" {
+		t.Fatalf("child name = %q, want child", child.GetName())
+	}
+	if child.GetAgentSessionID() != "" {
+		t.Fatalf("child agent session = %q, want empty before backend fork", child.GetAgentSessionID())
+	}
+	if child.ParentID != parent.ID || child.ParentAgentSessionID != "agent-parent" {
+		t.Fatalf("child parent fields = %#v", child)
+	}
+	if got := child.GetForkSourceAgentSessionID(); got != "agent-parent" {
+		t.Fatalf("fork source = %q, want agent-parent", got)
+	}
+	history := child.GetHistory(0)
+	if len(history) != 2 || history[0].Content != "build this" || history[1].Content != "working" {
+		t.Fatalf("child history = %#v", history)
+	}
+	if sm.ActiveSessionID("user1") != child.ID {
+		t.Fatalf("active session = %q, want child %q", sm.ActiveSessionID("user1"), child.ID)
+	}
+
+	child.AddHistory("user", "child-only")
+	if len(parent.GetHistory(0)) != 2 {
+		t.Fatal("child history mutation should not affect parent")
+	}
+}
+
 func TestSessionManager_ListSessions(t *testing.T) {
 	sm := NewSessionManager("")
 	sm.NewSession("user1", "a")

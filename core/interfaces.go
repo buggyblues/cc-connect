@@ -332,6 +332,13 @@ type Agent interface {
 	Stop() error
 }
 
+// AgentSessionForker is implemented by agents that can clone an existing
+// backend conversation into a new backend session instead of resuming it in
+// place. The returned AgentSession should report the new child session ID.
+type AgentSessionForker interface {
+	StartForkSession(ctx context.Context, parentSessionID string) (AgentSession, error)
+}
+
 // AgentSession represents a running interactive agent session with a persistent process.
 type AgentSession interface {
 	// Send sends a user message (with optional images and files) to the running agent process.

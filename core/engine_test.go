@@ -6587,6 +6587,7 @@ type controllableAgent struct {
 	nextSession    AgentSession
 	listFn         func() ([]AgentSessionInfo, error)
 	startSessionFn func(ctx context.Context, sessionID string) (AgentSession, error)
+	forkSessionFn  func(ctx context.Context, parentSessionID string) (AgentSession, error)
 }
 
 func (a *controllableAgent) Name() string { return "controllable" }
@@ -6598,6 +6599,12 @@ func (a *controllableAgent) StartSession(ctx context.Context, sessionID string) 
 		return a.nextSession, nil
 	}
 	return newControllableSession("default"), nil
+}
+func (a *controllableAgent) StartForkSession(ctx context.Context, parentSessionID string) (AgentSession, error) {
+	if a.forkSessionFn != nil {
+		return a.forkSessionFn(ctx, parentSessionID)
+	}
+	return a.StartSession(ctx, parentSessionID)
 }
 func (a *controllableAgent) ListSessions(_ context.Context) ([]AgentSessionInfo, error) {
 	if a.listFn != nil {
@@ -6951,6 +6958,42 @@ func TestInteractiveWriteBack_NamingBindsOnlyOnFirstAssignment(t *testing.T) {
 	}
 	if got := e.sessions.GetSessionName("forked-id"); got != "" {
 		t.Fatalf("forked-id name = %q, want empty — name must bind only on first assignment", got)
+	}
+}
+
+func TestInteractiveStart_UsesPendingForkSource(t *testing.T) {
+	var gotParent string
+	agent := &controllableAgent{
+		forkSessionFn: func(_ context.Context, parentSessionID string) (AgentSession, error) {
+			gotParent = parentSessionID
+			return newControllableSession("child-agent-id"), nil
+		},
+		startSessionFn: func(_ context.Context, sessionID string) (AgentSession, error) {
+			t.Fatalf("StartSession should not be used for pending fork source %q", sessionID)
+			return nil, nil
+		},
+	}
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	session := &Session{
+		Name:                     "child",
+		AgentType:                "controllable",
+		ParentID:                 "parent-session",
+		ParentAgentSessionID:     "parent-agent-id",
+		ForkSourceAgentSessionID: "parent-agent-id",
+	}
+
+	e.getOrCreateInteractiveStateWith("test:user1", p, "ctx", session, e.sessions, nil, "")
+
+	if gotParent != "parent-agent-id" {
+		t.Fatalf("fork parent = %q, want parent-agent-id", gotParent)
+	}
+	if got := session.GetAgentSessionID(); got != "child-agent-id" {
+		t.Fatalf("agent session id = %q, want child-agent-id", got)
+	}
+	if got := session.GetForkSourceAgentSessionID(); got != "" {
+		t.Fatalf("fork source should be cleared after start, got %q", got)
 	}
 }
 

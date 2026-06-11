@@ -248,8 +248,8 @@ type Engine struct {
 	filterExternalSessions bool
 
 	// Shell configuration for /shell, cron exec, hooks, webhook exec
-	shell       string // shell binary path (e.g. "sh", "/bin/zsh")
-	shellFlag   string // shell flag (e.g. "-c", "-Command", "/C")
+	shell        string // shell binary path (e.g. "sh", "/bin/zsh")
+	shellFlag    string // shell flag (e.g. "-c", "-Command", "/C")
 	shellProfile string // prepended to every command (e.g. "source ~/.zshrc;")
 
 	// Multi-workspace mode
@@ -3210,6 +3210,10 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	// is unbound, force a fresh start instead of attaching to whichever CLI
 	// conversation happens to be "latest" in this workspace.
 	startSessionID := session.GetAgentSessionID()
+	forkSourceID := ""
+	if startSessionID == "" {
+		forkSourceID = session.GetForkSourceAgentSessionID()
+	}
 	// Cross-project session leakage guard (issue #599): if a session ID was
 	// inherited from a different project's workspace (e.g. another
 	// cc-connect project that happens to share a Session row), the agent
@@ -3224,13 +3228,53 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			startSessionID = ""
 		}
 	}
+	if forkSourceID != "" {
+		if validator, ok := agent.(SessionIDValidator); ok && !validator.ValidateSessionID(e.ctx, forkSourceID) {
+			slog.Warn("fork source session ID does not belong to this project, clearing it",
+				"session_key", sessionKey, "invalid_session_id", forkSourceID)
+			session.ClearForkSourceAgentSessionID()
+			sessions.Save()
+			forkSourceID = ""
+		}
+	}
 	isResume := startSessionID != ""
+	isFork := forkSourceID != ""
 	startAt := time.Now()
-	agentSession, err := agent.StartSession(e.ctx, startSessionID)
+	var agentSession AgentSession
+	var err error
+	if forkSourceID != "" {
+		if forker, ok := agent.(AgentSessionForker); ok {
+			agentSession, err = forker.StartForkSession(e.ctx, forkSourceID)
+		} else {
+			slog.Warn("agent does not support session fork, starting fresh session",
+				"session_key", sessionKey, "agent", agent.Name(), "fork_source_session", forkSourceID)
+			session.ClearForkSourceAgentSessionID()
+			sessions.Save()
+			forkSourceID = ""
+			isFork = false
+			agentSession, err = agent.StartSession(e.ctx, "")
+		}
+	} else {
+		agentSession, err = agent.StartSession(e.ctx, startSessionID)
+	}
 	startElapsed := time.Since(startAt)
 	if err != nil {
 		// If resume/continue failed, try a fresh session as fallback.
-		if startSessionID != "" {
+		if forkSourceID != "" {
+			slog.Error("session fork failed, falling back to fresh session",
+				"session_key", sessionKey, "fork_source_session", forkSourceID,
+				"error", err, "elapsed", startElapsed)
+			session.ClearForkSourceAgentSessionID()
+			sessions.Save()
+			isFork = false
+			startAt = time.Now()
+			agentSession, err = agent.StartSession(e.ctx, "")
+			startElapsed = time.Since(startAt)
+			if err == nil {
+				slog.Info("fresh session started after fork failure",
+					"session_key", sessionKey, "elapsed", startElapsed)
+			}
+		} else if startSessionID != "" {
 			slog.Error("session resume failed, falling back to fresh session",
 				"session_key", sessionKey, "failed_session_id", startSessionID,
 				"error", err, "elapsed", startElapsed)
@@ -3302,7 +3346,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	state = newState
 	e.interactiveStates[sessionKey] = state
 
-	slog.Info("session spawned", "session_key", sessionKey, "agent_session", session.GetAgentSessionID(), "is_resume", isResume, "elapsed", startElapsed)
+	slog.Info("session spawned", "session_key", sessionKey, "agent_session", session.GetAgentSessionID(), "is_resume", isResume, "is_fork", isFork, "elapsed", startElapsed)
 
 	e.hooks.Emit(HookEvent{
 		Event:      HookEventSessionStarted,
@@ -3311,6 +3355,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		Extra: map[string]any{
 			"agent_session_id": session.GetAgentSessionID(),
 			"is_resume":        isResume,
+			"is_fork":          isFork,
 		},
 	})
 

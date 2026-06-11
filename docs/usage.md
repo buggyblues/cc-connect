@@ -1117,6 +1117,7 @@ Served on the same port as the WebSocket.
 | `GET` | `/bridge/sessions/{id}?session_key=...&project=...` | Get session detail + history |
 | `DELETE` | `/bridge/sessions/{id}?session_key=...&project=...` | Delete a session |
 | `POST` | `/bridge/sessions/switch` | Switch active session |
+| `POST` | `/bridge/sessions/fork` | Fork a child session from the active or specified session |
 
 Full protocol reference: [bridge-protocol.md](./bridge-protocol.md)
 

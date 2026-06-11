@@ -879,6 +879,59 @@ func TestBridge_SessionSwitch(t *testing.T) {
 	}
 }
 
+func TestBridge_SessionFork(t *testing.T) {
+	bs, baseURL := startTestBridgeWithREST(t, "tok")
+	ref := bs.resolveEngineForSessionKey("test:u1:u1", "")
+	if ref == nil {
+		t.Fatal("expected bridge engine")
+	}
+	parent := ref.engine.sessions.NewSession("test:u1:u1", "parent")
+	parent.SetAgentSessionID("agent-parent", "claudecode")
+	parent.AddHistory("user", "initial task")
+
+	r := bridgePost(t, baseURL+"/bridge/sessions/fork", "tok", map[string]any{
+		"session_key": "test:u1:u1",
+		"source":      parent.ID,
+		"name":        "branch",
+	})
+	if !r.OK {
+		t.Fatalf("fork failed: %s", r.Error)
+	}
+	var forked struct {
+		ID                        string `json:"id"`
+		Name                      string `json:"name"`
+		ActiveSessionID           string `json:"active_session_id"`
+		ForkedFromSessionID       string `json:"forked_from_session_id"`
+		ForkedFromAgentSessionID  string `json:"forked_from_agent_session_id"`
+		PendingForkAgentSessionID string `json:"pending_fork_agent_session_id"`
+	}
+	mustUnmarshalJSON(t, r.Data, &forked)
+	if forked.ID == "" || forked.ID == parent.ID {
+		t.Fatalf("forked id = %q, parent = %q", forked.ID, parent.ID)
+	}
+	if forked.Name != "branch" || forked.ActiveSessionID != forked.ID {
+		t.Fatalf("fork response = %#v", forked)
+	}
+	if forked.ForkedFromSessionID != parent.ID ||
+		forked.ForkedFromAgentSessionID != "agent-parent" ||
+		forked.PendingForkAgentSessionID != "agent-parent" {
+		t.Fatalf("fork source fields = %#v", forked)
+	}
+
+	r = bridgeGet(t, baseURL+"/bridge/sessions/"+forked.ID+"?session_key=test:u1:u1", "tok")
+	if !r.OK {
+		t.Fatalf("get fork detail failed: %s", r.Error)
+	}
+	var detail struct {
+		ID      string           `json:"id"`
+		History []map[string]any `json:"history"`
+	}
+	mustUnmarshalJSON(t, r.Data, &detail)
+	if detail.ID != forked.ID || len(detail.History) != 1 || detail.History[0]["content"] != "initial task" {
+		t.Fatalf("fork detail = %#v", detail)
+	}
+}
+
 func TestBridge_SessionAuthRequired(t *testing.T) {
 	_, baseURL := startTestBridgeWithREST(t, "secret")
 

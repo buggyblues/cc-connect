@@ -791,6 +791,51 @@ Switches the active session for a session key.
 
 ---
 
+#### POST /bridge/sessions/fork
+
+Creates a child session from an existing session. cc-connect copies its local
+history immediately and records the parent agent session ID as a pending backend
+fork source. On the child's first run, agents that support backend forks, such as
+Claude Code, create a true child agent session instead of resuming the parent in
+place.
+
+**Request body:**
+
+```json
+{
+  "session_key": "wechat:user123:user123",
+  "source": "s1",
+  "name": "alternative approach",
+  "activate": true
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session_key` | string | yes | Session key. |
+| `source` | string | no | Source session ID or name. Defaults to the active session. |
+| `name` | string | no | Child session name. Defaults to a derived fork name. |
+| `activate` | boolean | no | Whether to switch the session key to the child session. Defaults to `true`. |
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "id": "s3",
+    "name": "alternative approach",
+    "message": "session forked",
+    "active_session_id": "s3",
+    "forked_from_session_id": "s1",
+    "forked_from_agent_session_id": "agent-parent-id",
+    "pending_fork_agent_session_id": "agent-parent-id"
+  }
+}
+```
+
+---
+
 ## Error Handling
 
 ### Reconnection

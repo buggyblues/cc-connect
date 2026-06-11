@@ -1163,6 +1163,11 @@ func (bs *BridgeServer) handleSessionRoutes(w http.ResponseWriter, r *http.Reque
 		bs.handleSessionSwitch(w, r)
 		return
 	}
+	// POST /bridge/sessions/fork
+	if sub == "fork" {
+		bs.handleSessionFork(w, r)
+		return
+	}
 
 	// GET or DELETE /bridge/sessions/{id}
 	sessionKey := r.URL.Query().Get("session_key")
@@ -1248,6 +1253,52 @@ func (bs *BridgeServer) handleSessionSwitch(w http.ResponseWriter, r *http.Reque
 	bridgeJSON(w, http.StatusOK, map[string]any{
 		"message":           "session switched",
 		"active_session_id": s.ID,
+	})
+}
+
+// handleSessionFork handles POST /bridge/sessions/fork.
+func (bs *BridgeServer) handleSessionFork(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		bridgeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	var body struct {
+		SessionKey string `json:"session_key"`
+		Source     string `json:"source,omitempty"`
+		Name       string `json:"name,omitempty"`
+		Activate   *bool  `json:"activate,omitempty"`
+		Project    string `json:"project,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		bridgeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if body.SessionKey == "" {
+		bridgeError(w, http.StatusBadRequest, "session_key is required")
+		return
+	}
+	ref := bs.resolveEngineForSessionKey(body.SessionKey, body.Project)
+	if ref == nil {
+		bridgeError(w, http.StatusNotFound, "no engine found for session key")
+		return
+	}
+	activate := true
+	if body.Activate != nil {
+		activate = *body.Activate
+	}
+	child, source, err := ref.engine.sessions.ForkSession(body.SessionKey, body.Source, body.Name, activate)
+	if err != nil {
+		bridgeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	bridgeJSON(w, http.StatusOK, map[string]any{
+		"id":                            child.ID,
+		"name":                          child.GetName(),
+		"message":                       "session forked",
+		"active_session_id":             ref.engine.sessions.ActiveSessionID(body.SessionKey),
+		"forked_from_session_id":        source.ID,
+		"forked_from_agent_session_id":  child.ParentAgentSessionID,
+		"pending_fork_agent_session_id": child.GetForkSourceAgentSessionID(),
 	})
 }
 

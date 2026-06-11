@@ -108,7 +108,7 @@ func TestHandleAssistantCapturesPerSubCallUsage(t *testing.T) {
 		"session_id": "test-session",
 		"usage": map[string]any{
 			"input_tokens":                float64(130),
-			"output_tokens":               float64(648),       // real turn total
+			"output_tokens":               float64(648), // real turn total
 			"cache_creation_input_tokens": float64(2_000),
 			"cache_read_input_tokens":     float64(8_000_000), // summed, would inflate ctx
 		},
@@ -390,6 +390,57 @@ func TestBuildAppendSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestNewClaudeSessionForkAddsForkFlag(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cs, err := newClaudeSession(
+		ctx,
+		t.TempDir(),
+		os.Args[0],
+		[]string{"-test.run=TestHelperProcess", "--", "sleep"},
+		"",
+		"",
+		"",
+		"parent-session-id",
+		"default",
+		"",
+		"",
+		nil,
+		nil,
+		[]string{"GO_WANT_HELPER_PROCESS=1"},
+		"",
+		false,
+		core.SpawnOptions{},
+		true,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("newClaudeSession: %v", err)
+	}
+	defer cs.Close()
+
+	if !argsContainSequence(cs.cmd.Args, "--resume", "parent-session-id", "--fork-session") {
+		t.Fatalf("args missing resume fork sequence: %v", cs.cmd.Args)
+	}
+}
+
+func argsContainSequence(args []string, want ...string) bool {
+	for i := 0; i+len(want) <= len(args); i++ {
+		match := true
+		for j := range want {
+			if args[i+j] != want[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 func helperCommand(ctx context.Context, mode string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcess", "--", mode)
 	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
@@ -404,6 +455,12 @@ func TestHelperProcess(t *testing.T) {
 	}
 
 	mode := os.Args[len(os.Args)-1]
+	for i, arg := range os.Args {
+		if arg == "--" && i+1 < len(os.Args) {
+			mode = os.Args[i+1]
+			break
+		}
+	}
 	switch mode {
 	case "sleep":
 		time.Sleep(30 * time.Second)

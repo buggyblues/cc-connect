@@ -18,14 +18,17 @@ const ContinueSession = "__continue__"
 
 // Session tracks one conversation between a user and the agent.
 type Session struct {
-	ID                  string         `json:"id"`
-	Name                string         `json:"name"`
-	AgentSessionID      string         `json:"agent_session_id"`
-	AgentType           string         `json:"agent_type,omitempty"`
-	PastAgentSessionIDs []string       `json:"past_agent_session_ids,omitempty"`
-	History             []HistoryEntry `json:"history"`
-	CreatedAt           time.Time      `json:"created_at"`
-	UpdatedAt           time.Time      `json:"updated_at"`
+	ID                       string         `json:"id"`
+	Name                     string         `json:"name"`
+	AgentSessionID           string         `json:"agent_session_id"`
+	AgentType                string         `json:"agent_type,omitempty"`
+	ParentID                 string         `json:"parent_id,omitempty"`
+	ParentAgentSessionID     string         `json:"parent_agent_session_id,omitempty"`
+	ForkSourceAgentSessionID string         `json:"fork_source_agent_session_id,omitempty"`
+	PastAgentSessionIDs      []string       `json:"past_agent_session_ids,omitempty"`
+	History                  []HistoryEntry `json:"history"`
+	CreatedAt                time.Time      `json:"created_at"`
+	UpdatedAt                time.Time      `json:"updated_at"`
 	// LastUserActivity records when a real user message was last received.
 	// Unlike UpdatedAt (bumped by every session.Unlock including heartbeats and
 	// unsolicited agent output), this field is only updated when the engine
@@ -110,6 +113,9 @@ func (s *Session) SetAgentInfo(agentSessionID, agentType, name string) {
 	s.AgentSessionID = agentSessionID
 	s.AgentType = agentType
 	s.Name = name
+	if agentSessionID != "" {
+		s.ForkSourceAgentSessionID = ""
+	}
 }
 
 // GetAgentSessionID atomically reads the agent session ID.
@@ -174,6 +180,9 @@ func (s *Session) SetAgentSessionID(id, agentType string) {
 	}
 	s.AgentSessionID = id
 	s.AgentType = agentType
+	if id != "" {
+		s.ForkSourceAgentSessionID = ""
+	}
 }
 
 // CompareAndSetAgentSessionID sets the agent session ID only if it is currently
@@ -190,7 +199,22 @@ func (s *Session) CompareAndSetAgentSessionID(id, agentType string) bool {
 	}
 	s.AgentSessionID = id
 	s.AgentType = agentType
+	s.ForkSourceAgentSessionID = ""
 	return true
+}
+
+// GetForkSourceAgentSessionID returns the parent agent session ID that should
+// be forked the first time this cc-connect session starts an agent.
+func (s *Session) GetForkSourceAgentSessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ForkSourceAgentSessionID
+}
+
+func (s *Session) ClearForkSourceAgentSessionID() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ForkSourceAgentSessionID = ""
 }
 
 func (s *Session) stripContinueSessionSentinel() {
@@ -318,6 +342,60 @@ func (sm *SessionManager) NewSession(userKey, name string) *Session {
 	return s
 }
 
+// ForkSession creates a new cc-connect session from an existing session. It
+// copies cc-connect's local history and records the parent agent session ID as
+// a pending fork source; the child intentionally starts without AgentSessionID
+// so the engine can ask capable agents to create a true backend fork on first use.
+func (sm *SessionManager) ForkSession(userKey, sourceTarget, name string, activate bool) (*Session, *Session, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	source := sm.findUserSessionLocked(userKey, sourceTarget)
+	if source == nil {
+		if strings.TrimSpace(sourceTarget) == "" {
+			return nil, nil, fmt.Errorf("active session not found")
+		}
+		return nil, nil, fmt.Errorf("session %q not found", sourceTarget)
+	}
+
+	source.mu.Lock()
+	sourceID := source.ID
+	sourceName := source.Name
+	sourceAgentID := source.AgentSessionID
+	sourceAgentType := source.AgentType
+	history := append([]HistoryEntry(nil), source.History...)
+	source.mu.Unlock()
+
+	if strings.TrimSpace(name) == "" {
+		if sourceName == "" || sourceName == "default" {
+			name = "fork"
+		} else {
+			name = sourceName + " fork"
+		}
+	}
+
+	id := sm.nextID()
+	now := time.Now()
+	child := &Session{
+		ID:                       id,
+		Name:                     name,
+		AgentType:                sourceAgentType,
+		ParentID:                 sourceID,
+		ParentAgentSessionID:     sourceAgentID,
+		ForkSourceAgentSessionID: sourceAgentID,
+		History:                  history,
+		CreatedAt:                now,
+		UpdatedAt:                now,
+	}
+	sm.sessions[id] = child
+	sm.userSessions[userKey] = append(sm.userSessions[userKey], id)
+	if activate {
+		sm.activeSession[userKey] = id
+	}
+	sm.saveLocked()
+	return child, source, nil
+}
+
 // NewSideSession registers a new session for userKey without changing the active
 // session. Used for isolated one-off runs (e.g. cron with session_mode=new_per_run)
 // so the user's current chat remains the default target for normal messages.
@@ -357,15 +435,28 @@ func (sm *SessionManager) SwitchSession(userKey, target string) (*Session, error
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	if s := sm.findUserSessionLocked(userKey, target); s != nil {
+		sm.activeSession[userKey] = s.ID
+		sm.saveLocked()
+		return s, nil
+	}
+	return nil, fmt.Errorf("session %q not found", target)
+}
+
+func (sm *SessionManager) findUserSessionLocked(userKey, target string) *Session {
+	if strings.TrimSpace(target) == "" {
+		if sid, ok := sm.activeSession[userKey]; ok {
+			return sm.sessions[sid]
+		}
+		return nil
+	}
 	for _, sid := range sm.userSessions[userKey] {
 		s := sm.sessions[sid]
 		if s != nil && (s.ID == target || s.Name == target) {
-			sm.activeSession[userKey] = s.ID
-			sm.saveLocked()
-			return s, nil
+			return s
 		}
 	}
-	return nil, fmt.Errorf("session %q not found", target)
+	return nil
 }
 
 // SwitchToAgentSession finds or creates an internal session that maps to the
@@ -612,14 +703,17 @@ func (sm *SessionManager) saveLocked() {
 			s.AgentSessionID = ""
 		}
 		snapSessions[id] = &Session{
-			ID:                  s.ID,
-			Name:                s.Name,
-			AgentSessionID:      agentSID,
-			AgentType:           s.AgentType,
-			PastAgentSessionIDs: append([]string(nil), s.PastAgentSessionIDs...),
-			History:             append([]HistoryEntry(nil), s.History...),
-			CreatedAt:           s.CreatedAt,
-			UpdatedAt:           s.UpdatedAt,
+			ID:                       s.ID,
+			Name:                     s.Name,
+			AgentSessionID:           agentSID,
+			AgentType:                s.AgentType,
+			ParentID:                 s.ParentID,
+			ParentAgentSessionID:     s.ParentAgentSessionID,
+			ForkSourceAgentSessionID: s.ForkSourceAgentSessionID,
+			PastAgentSessionIDs:      append([]string(nil), s.PastAgentSessionIDs...),
+			History:                  append([]HistoryEntry(nil), s.History...),
+			CreatedAt:                s.CreatedAt,
+			UpdatedAt:                s.UpdatedAt,
 		}
 		s.mu.Unlock()
 	}
@@ -803,7 +897,7 @@ func (sm *SessionManager) PruneDuplicateSessions(mergeHistory bool) PruneResult 
 	defer sm.mu.Unlock()
 
 	// Group sessions by baseChat
-	chatSessions := make(map[string][]*Session) // baseChat -> sessions
+	chatSessions := make(map[string][]*Session)  // baseChat -> sessions
 	sessionToBaseChat := make(map[string]string) // session.ID -> baseChat
 
 	for userKey, sessionIDs := range sm.userSessions {

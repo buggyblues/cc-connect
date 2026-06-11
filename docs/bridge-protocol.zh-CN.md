@@ -791,6 +791,50 @@ Session key 遵循以下格式：
 
 ---
 
+#### POST /bridge/sessions/fork
+
+从已有会话创建子会话。cc-connect 会立即复制本地 history，并把父级 agent
+session id 记录为待执行的后端 fork 来源。子会话第一次运行时，如果底层 agent
+支持后端 fork，例如 Claude Code，会创建真正的子 agent session，而不是原地
+resume 父会话。
+
+**请求体：**
+
+```json
+{
+  "session_key": "wechat:user123:user123",
+  "source": "s1",
+  "name": "alternative approach",
+  "activate": true
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `session_key` | string | 是 | Session key。 |
+| `source` | string | 否 | 来源会话 ID 或名称，默认使用当前活跃会话。 |
+| `name` | string | 否 | 子会话名称，默认从来源会话派生。 |
+| `activate` | boolean | 否 | 是否把当前 session key 切换到子会话，默认 `true`。 |
+
+**响应：**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "id": "s3",
+    "name": "alternative approach",
+    "message": "session forked",
+    "active_session_id": "s3",
+    "forked_from_session_id": "s1",
+    "forked_from_agent_session_id": "agent-parent-id",
+    "pending_fork_agent_session_id": "agent-parent-id"
+  }
+}
+```
+
+---
+
 ## 错误处理
 
 ### 断线重连

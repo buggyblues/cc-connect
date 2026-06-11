@@ -1030,6 +1030,7 @@ WebSocket 支持双向通信 —— 向 Agent 发送消息，并实时接收 Age
 | `GET` | `/bridge/sessions/{id}?session_key=...&project=...` | 获取会话详情及历史 |
 | `DELETE` | `/bridge/sessions/{id}?session_key=...&project=...` | 删除会话 |
 | `POST` | `/bridge/sessions/switch` | 切换当前活跃会话 |
+| `POST` | `/bridge/sessions/fork` | 从当前或指定会话 fork 子会话 |
 
 完整协议参考：[bridge-protocol.md](./bridge-protocol.md)（[中文版](./bridge-protocol.zh-CN.md)）
 
