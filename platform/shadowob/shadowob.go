@@ -42,6 +42,9 @@ type replyContext struct {
 	replyToID     string
 	sessionKey    string
 	collaboration *buddyCollaborationMetadata
+	taskMessageID string
+	taskCardID    string
+	taskComplete  bool
 }
 
 type taskThreadBinding struct {
@@ -984,8 +987,14 @@ func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, collaborati
 		replyToID = taskBinding.messageID
 	}
 	sessionKey := p.sessionKeyFor(sm, dm, authorID, threadID)
+	taskMessageID := ""
+	taskCardID := ""
+	taskComplete := false
 	if taskBinding != nil {
 		sessionKey = taskSessionKey(taskBinding.channelID, taskBinding.threadID, taskBinding.messageID, taskBinding.cardID)
+		taskMessageID = taskBinding.messageID
+		taskCardID = taskBinding.cardID
+		taskComplete = sm.ID == taskBinding.messageID && sm.ThreadID == ""
 	}
 	return replyContext{
 		channelID:     sm.ChannelID,
@@ -995,6 +1004,9 @@ func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, collaborati
 		replyToID:     replyToID,
 		sessionKey:    sessionKey,
 		collaboration: collaboration,
+		taskMessageID: taskMessageID,
+		taskCardID:    taskCardID,
+		taskComplete:  taskComplete,
 	}
 }
 
@@ -1232,6 +1244,9 @@ func (p *Platform) Reply(ctx context.Context, replyCtx any, content string) erro
 		return fmt.Errorf("shadowob: invalid reply context type %T", replyCtx)
 	}
 	_, err := p.sendToReplyContext(ctx, rc, content, true, nil)
+	if err == nil {
+		p.completeTaskAfterReply(ctx, rc)
+	}
 	return err
 }
 
@@ -1244,10 +1259,27 @@ func (p *Platform) Send(ctx context.Context, replyCtx any, content string) error
 		reqCtx, cancel := requestContext(ctx)
 		_, err := p.client.editMessage(reqCtx, previewID, content)
 		cancel()
+		if err == nil {
+			p.completeTaskAfterReply(ctx, rc)
+		}
 		return err
 	}
 	_, err := p.sendToReplyContext(ctx, rc, content, false, nil)
+	if err == nil {
+		p.completeTaskAfterReply(ctx, rc)
+	}
 	return err
+}
+
+func (p *Platform) completeTaskAfterReply(ctx context.Context, rc replyContext) {
+	if !rc.taskComplete || rc.taskMessageID == "" || rc.taskCardID == "" || p.client == nil {
+		return
+	}
+	reqCtx, cancel := requestContext(ctx)
+	defer cancel()
+	if _, err := p.client.updateTaskCard(reqCtx, rc.taskMessageID, rc.taskCardID, "completed", "cc-connect completed the task."); err != nil {
+		slog.Warn("shadowob: complete task card after reply failed", "message_id", rc.taskMessageID, "card_id", rc.taskCardID, "error", err)
+	}
 }
 
 func (p *Platform) popPreviewID(sessionKey string) string {

@@ -3,6 +3,7 @@ package shadowob
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -537,7 +538,9 @@ func TestExplicitMentionOverridesDisabledReplyPolicy(t *testing.T) {
 }
 
 func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
-	var claimCalled, updateCalled bool
+	var claimCalled bool
+	var updateStatuses []string
+	var sentMessages []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/messages/root-1/cards/card-1/claim":
@@ -559,12 +562,13 @@ func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
 				},
 			})
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/messages/root-1/cards/card-1":
-			updateCalled = true
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode update: %v", err)
 			}
-			if body["status"] != "running" {
+			status, _ := body["status"].(string)
+			updateStatuses = append(updateStatuses, status)
+			if status != "running" && status != "completed" {
 				t.Fatalf("task status update = %#v", body)
 			}
 			_ = json.NewEncoder(w).Encode(shadowMessage{
@@ -577,12 +581,19 @@ func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
 						"id":       "card-1",
 						"title":    "Task title",
 						"body":     "Task body",
-						"status":   "running",
+						"status":   status,
 						"assignee": map[string]any{"agentId": "buddy-1"},
 						"data":     map[string]any{"task": map[string]any{"threadId": "thread-1"}},
 					}},
 				},
 			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/channels/ch1/messages":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode send: %v", err)
+			}
+			sentMessages = append(sentMessages, body)
+			_ = json.NewEncoder(w).Encode(shadowMessage{ID: fmt.Sprintf("sent-%d", len(sentMessages)), ChannelID: "ch1", Content: stringValue(body["content"])})
 		case r.URL.Path == "/api/buddy-collaborations/claim":
 			t.Fatalf("task context should not call collaboration claim")
 		default:
@@ -625,8 +636,8 @@ func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
 		},
 	})
 
-	if !claimCalled || !updateCalled {
-		t.Fatalf("claim/update called = %v/%v", claimCalled, updateCalled)
+	if !claimCalled || len(updateStatuses) != 1 || updateStatuses[0] != "running" {
+		t.Fatalf("claim/update called = %v/%v", claimCalled, updateStatuses)
 	}
 	if len(got) != 1 {
 		t.Fatalf("messages dispatched after task = %d", len(got))
@@ -644,6 +655,15 @@ func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
 	}
 	if rc.threadID != "thread-1" || rc.replyToID != "root-1" {
 		t.Fatalf("task reply context = %#v", rc)
+	}
+	if !rc.taskComplete || rc.taskMessageID != "root-1" || rc.taskCardID != "card-1" {
+		t.Fatalf("task completion context = %#v", rc)
+	}
+	if err := p.Send(context.Background(), got[0].ReplyCtx, "done"); err != nil {
+		t.Fatalf("send task reply: %v", err)
+	}
+	if len(updateStatuses) != 2 || updateStatuses[1] != "completed" {
+		t.Fatalf("task completion updates = %#v", updateStatuses)
 	}
 
 	p.handleChannelMessage(context.Background(), shadowMessage{
@@ -664,6 +684,19 @@ func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
 	if !strings.Contains(got[1].Content, "[Shadow Inbox task thread comment]") ||
 		!strings.Contains(got[1].Content, "Please answer FOLLOWUP.") {
 		t.Fatalf("missing task thread prompt: %q", got[1].Content)
+	}
+	threadRC, ok := got[1].ReplyCtx.(replyContext)
+	if !ok {
+		t.Fatalf("thread reply context type = %T", got[1].ReplyCtx)
+	}
+	if threadRC.taskComplete {
+		t.Fatalf("thread comments must not auto-complete tasks: %#v", threadRC)
+	}
+	if err := p.Send(context.Background(), got[1].ReplyCtx, "followup"); err != nil {
+		t.Fatalf("send task thread reply: %v", err)
+	}
+	if len(updateStatuses) != 2 {
+		t.Fatalf("thread reply should not update task status: %#v", updateStatuses)
 	}
 }
 
