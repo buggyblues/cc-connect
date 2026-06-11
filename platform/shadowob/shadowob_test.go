@@ -536,6 +536,137 @@ func TestExplicitMentionOverridesDisabledReplyPolicy(t *testing.T) {
 	}
 }
 
+func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
+	var claimCalled, updateCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/messages/root-1/cards/card-1/claim":
+			claimCalled = true
+			_ = json.NewEncoder(w).Encode(shadowMessage{
+				ID:        "root-1",
+				ChannelID: "ch1",
+				Content:   "Task title\n\nTask body",
+				Metadata: map[string]any{
+					"cards": []any{map[string]any{
+						"kind":     "task",
+						"id":       "card-1",
+						"title":    "Task title",
+						"body":     "Task body",
+						"status":   "claimed",
+						"assignee": map[string]any{"agentId": "buddy-1"},
+						"data":     map[string]any{"task": map[string]any{"threadId": "thread-1"}},
+					}},
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/messages/root-1/cards/card-1":
+			updateCalled = true
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode update: %v", err)
+			}
+			if body["status"] != "running" {
+				t.Fatalf("task status update = %#v", body)
+			}
+			_ = json.NewEncoder(w).Encode(shadowMessage{
+				ID:        "root-1",
+				ChannelID: "ch1",
+				Content:   "Task title\n\nTask body",
+				Metadata: map[string]any{
+					"cards": []any{map[string]any{
+						"kind":     "task",
+						"id":       "card-1",
+						"title":    "Task title",
+						"body":     "Task body",
+						"status":   "running",
+						"assignee": map[string]any{"agentId": "buddy-1"},
+						"data":     map[string]any{"task": map[string]any{"threadId": "thread-1"}},
+					}},
+				},
+			})
+		case r.URL.Path == "/api/buddy-collaborations/claim":
+			t.Fatalf("task context should not call collaboration claim")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.me = shadowUser{ID: "buddy-user", Username: "buddy"}
+	p.channels["ch1"] = channelRuntime{
+		ID: "ch1",
+		Policy: shadowChannelPolicy{
+			Listen:      true,
+			Reply:       false,
+			MentionOnly: true,
+		},
+	}
+	var got []*core.Message
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got = append(got, msg)
+	}
+
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "root-1",
+		ChannelID: "ch1",
+		AuthorID:  "human-1",
+		Content:   "Task title\n\nTask body",
+		Author:    &shadowAuthor{ID: "human-1", Username: "alice"},
+		Metadata: map[string]any{
+			"cards": []any{map[string]any{
+				"kind":     "task",
+				"id":       "card-1",
+				"title":    "Task title",
+				"body":     "Task body",
+				"status":   "queued",
+				"assignee": map[string]any{"agentId": "buddy-1"},
+				"data":     map[string]any{"task": map[string]any{"threadId": "thread-1"}},
+			}},
+		},
+	})
+
+	if !claimCalled || !updateCalled {
+		t.Fatalf("claim/update called = %v/%v", claimCalled, updateCalled)
+	}
+	if len(got) != 1 {
+		t.Fatalf("messages dispatched after task = %d", len(got))
+	}
+	wantSession := "shadowob:task:channel:ch1:thread:thread-1:message:root-1:card:card-1"
+	if got[0].SessionKey != wantSession {
+		t.Fatalf("task session key = %q", got[0].SessionKey)
+	}
+	if !strings.Contains(got[0].Content, "[Shadow Inbox task]") {
+		t.Fatalf("missing task prompt: %q", got[0].Content)
+	}
+	rc, ok := got[0].ReplyCtx.(replyContext)
+	if !ok {
+		t.Fatalf("reply context type = %T", got[0].ReplyCtx)
+	}
+	if rc.threadID != "thread-1" || rc.replyToID != "root-1" {
+		t.Fatalf("task reply context = %#v", rc)
+	}
+
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "comment-1",
+		ChannelID: "ch1",
+		ThreadID:  "thread-1",
+		AuthorID:  "human-1",
+		Content:   "Please answer FOLLOWUP.",
+		Author:    &shadowAuthor{ID: "human-1", Username: "alice"},
+	})
+
+	if len(got) != 2 {
+		t.Fatalf("messages dispatched after thread comment = %d", len(got))
+	}
+	if got[1].SessionKey != wantSession {
+		t.Fatalf("thread comment session key = %q", got[1].SessionKey)
+	}
+	if !strings.Contains(got[1].Content, "[Shadow Inbox task thread comment]") ||
+		!strings.Contains(got[1].Content, "Please answer FOLLOWUP.") {
+		t.Fatalf("missing task thread prompt: %q", got[1].Content)
+	}
+}
+
 func TestBuddyMessageWithCollaborationClaimsConversationTurn(t *testing.T) {
 	var claimReq claimBuddyReplyInput
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

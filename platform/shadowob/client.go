@@ -218,6 +218,42 @@ func (c *shadowClient) claimBuddyReply(ctx context.Context, input claimBuddyRepl
 	return &out, nil
 }
 
+func (c *shadowClient) claimTaskCard(ctx context.Context, messageID, cardID, note string) (*shadowMessage, error) {
+	body := map[string]any{}
+	if strings.TrimSpace(note) != "" {
+		body["note"] = note
+	}
+	var out shadowMessage
+	if err := c.requestJSON(
+		ctx,
+		http.MethodPost,
+		"/api/messages/"+url.PathEscape(messageID)+"/cards/"+url.PathEscape(cardID)+"/claim",
+		body,
+		&out,
+	); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *shadowClient) updateTaskCard(ctx context.Context, messageID, cardID, status, note string) (*shadowMessage, error) {
+	body := map[string]any{"status": status}
+	if strings.TrimSpace(note) != "" {
+		body["note"] = note
+	}
+	var out shadowMessage
+	if err := c.requestJSON(
+		ctx,
+		http.MethodPatch,
+		"/api/messages/"+url.PathEscape(messageID)+"/cards/"+url.PathEscape(cardID),
+		body,
+		&out,
+	); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 type sendMessageOptions struct {
 	ThreadID    string         `json:"threadId,omitempty"`
 	ReplyToID   string         `json:"replyToId,omitempty"`

@@ -44,6 +44,14 @@ type replyContext struct {
 	collaboration *buddyCollaborationMetadata
 }
 
+type taskThreadBinding struct {
+	channelID string
+	threadID  string
+	messageID string
+	cardID    string
+	title     string
+}
+
 type previewHandle struct {
 	messageID string
 }
@@ -95,6 +103,7 @@ type Platform struct {
 	receivedMsgIDs      map[string]time.Time
 	lastReceivedSweep   time.Time
 	previewMsgs         map[string]string
+	taskThreadBindings  map[string]taskThreadBinding
 }
 
 func New(opts map[string]any) (core.Platform, error) {
@@ -150,6 +159,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		sentMessageIDs:        make(map[string]time.Time),
 		receivedMsgIDs:        make(map[string]time.Time),
 		previewMsgs:           make(map[string]string),
+		taskThreadBindings:    make(map[string]taskThreadBinding),
 	}, nil
 }
 
@@ -569,9 +579,213 @@ func (p *Platform) handlePolicyChanged(data json.RawMessage) {
 	p.mu.Unlock()
 }
 
+func isTerminalTaskStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "failed", "canceled", "transferred":
+		return true
+	default:
+		return false
+	}
+}
+
+func taskCardID(card map[string]any) string {
+	return firstNonEmpty(stringValue(card["id"]), stringValue(card["cardId"]), stringValue(card["card_id"]))
+}
+
+func taskThreadIDFromCard(card map[string]any) string {
+	if threadID := stringMapValue(card, "threadId", "thread_id", "taskThreadId"); threadID != "" {
+		return threadID
+	}
+	for _, key := range []string{"data", "target"} {
+		nested, _ := card[key].(map[string]any)
+		if nested == nil {
+			continue
+		}
+		if threadID := stringMapValue(nested, "threadId", "thread_id", "taskThreadId"); threadID != "" {
+			return threadID
+		}
+		if task, _ := nested["task"].(map[string]any); task != nil {
+			if threadID := stringMapValue(task, "threadId", "thread_id", "taskThreadId"); threadID != "" {
+				return threadID
+			}
+		}
+	}
+	return ""
+}
+
+func runtimeTaskCardForSelf(sm shadowMessage, buddyUserID, agentID string) map[string]any {
+	if len(sm.Metadata) == 0 {
+		return nil
+	}
+	cards, _ := sm.Metadata["cards"].([]any)
+	for _, raw := range cards {
+		card, ok := raw.(map[string]any)
+		if !ok || card["kind"] != "task" {
+			continue
+		}
+		if isTerminalTaskStatus(stringValue(card["status"])) {
+			continue
+		}
+		assignee, _ := card["assignee"].(map[string]any)
+		if assignee == nil {
+			return card
+		}
+		assignedUser := stringMapValue(assignee, "userId", "user_id")
+		assignedAgent := stringMapValue(assignee, "agentId", "agent_id")
+		if buddyUserID != "" && assignedUser == buddyUserID {
+			return card
+		}
+		if agentID != "" && assignedAgent == agentID {
+			return card
+		}
+		if assignedUser == "" && assignedAgent == "" {
+			return card
+		}
+	}
+	return nil
+}
+
+func formatTaskCardPrompt(content string, sm shadowMessage, card map[string]any) string {
+	title := strings.TrimSpace(stringValue(card["title"]))
+	if title == "" {
+		title = "Inbox task"
+	}
+	body := strings.TrimSpace(stringValue(card["body"]))
+	cardID := taskCardID(card)
+	threadID := taskThreadIDFromCard(card)
+	lines := []string{"[Shadow Inbox task]", "Title: " + title}
+	if sm.ID != "" {
+		lines = append(lines, "Task message id: "+sm.ID)
+	}
+	if cardID != "" {
+		lines = append(lines, "Task card id: "+cardID)
+	}
+	if threadID != "" {
+		lines = append(lines, "Task thread id: "+threadID)
+	}
+	if priority := strings.TrimSpace(stringValue(card["priority"])); priority != "" {
+		lines = append(lines, "Priority: "+priority)
+	}
+	lines = append(lines,
+		"",
+		"Send ordinary task discussion replies to the Shadow task thread.",
+		"Do not change the task status unless the human explicitly asks you to update it.",
+	)
+	if body != "" {
+		lines = append(lines, "", body)
+	}
+	if trimmed := strings.TrimSpace(content); trimmed != "" && trimmed != title && trimmed != body {
+		lines = append(lines, "", "Original message:", trimmed)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatTaskThreadPrompt(content string, binding taskThreadBinding) string {
+	title := strings.TrimSpace(binding.title)
+	if title == "" {
+		title = "Inbox task"
+	}
+	lines := []string{
+		"[Shadow Inbox task thread comment]",
+		"Task title: " + title,
+		"Task message id: " + binding.messageID,
+		"Task card id: " + binding.cardID,
+		"Reply as an ordinary discussion message in this same task thread.",
+		"Do not change the task status unless the human explicitly asks you to update it.",
+	}
+	if trimmed := strings.TrimSpace(content); trimmed != "" {
+		lines = append(lines, "", trimmed)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func taskSessionKey(channelID, threadID, messageID, cardID string) string {
+	parts := []string{"shadowob", "task", "channel", channelID}
+	if threadID != "" {
+		parts = append(parts, "thread", threadID)
+	}
+	parts = append(parts, "message", messageID, "card", cardID)
+	return strings.Join(parts, ":")
+}
+
+func (p *Platform) rememberTaskThreadBinding(binding taskThreadBinding) {
+	if binding.threadID == "" || binding.messageID == "" || binding.cardID == "" {
+		return
+	}
+	p.mu.Lock()
+	if p.taskThreadBindings == nil {
+		p.taskThreadBindings = make(map[string]taskThreadBinding)
+	}
+	p.taskThreadBindings[binding.threadID] = binding
+	p.mu.Unlock()
+}
+
+func (p *Platform) taskThreadBinding(threadID string) (taskThreadBinding, bool) {
+	p.mu.RLock()
+	binding, ok := p.taskThreadBindings[threadID]
+	p.mu.RUnlock()
+	return binding, ok
+}
+
+func (p *Platform) activateTaskCard(ctx context.Context, sm shadowMessage, card map[string]any) (shadowMessage, map[string]any, bool) {
+	cardID := taskCardID(card)
+	if cardID == "" {
+		return sm, card, true
+	}
+	status := strings.ToLower(strings.TrimSpace(stringValue(card["status"])))
+	current := sm
+	if status == "" || status == "queued" {
+		reqCtx, cancel := requestContext(ctx)
+		updated, err := p.client.claimTaskCard(reqCtx, sm.ID, cardID, "cc-connect accepted the Inbox task.")
+		cancel()
+		if err != nil {
+			slog.Debug("shadowob: claim task card failed", "message_id", sm.ID, "card_id", cardID, "error", err)
+			return sm, card, false
+		}
+		if updated != nil {
+			current = *updated
+			if next := taskCardByID(current, cardID); next != nil {
+				card = next
+				status = strings.ToLower(strings.TrimSpace(stringValue(card["status"])))
+			}
+		}
+	}
+	if status == "queued" || status == "claimed" {
+		reqCtx, cancel := requestContext(ctx)
+		updated, err := p.client.updateTaskCard(reqCtx, sm.ID, cardID, "running", "cc-connect started working on the task.")
+		cancel()
+		if err != nil {
+			slog.Debug("shadowob: update task card running failed", "message_id", sm.ID, "card_id", cardID, "error", err)
+			return current, card, false
+		}
+		if updated != nil {
+			current = *updated
+			if next := taskCardByID(current, cardID); next != nil {
+				card = next
+			}
+		}
+	}
+	return current, card, true
+}
+
+func taskCardByID(sm shadowMessage, cardID string) map[string]any {
+	if len(sm.Metadata) == 0 || cardID == "" {
+		return nil
+	}
+	cards, _ := sm.Metadata["cards"].([]any)
+	for _, raw := range cards {
+		card, ok := raw.(map[string]any)
+		if ok && card["kind"] == "task" && taskCardID(card) == cardID {
+			return card
+		}
+	}
+	return nil
+}
+
 func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 	p.mu.RLock()
 	rt, known := p.channels[sm.ChannelID]
+	buddyUserID := p.me.ID
 	p.mu.RUnlock()
 	if !known && len(p.configChannelIDs) > 0 {
 		return
@@ -583,24 +797,61 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 		return
 	}
 	mentionsMe := p.messageMentionsMe(sm)
-	if rt.Policy.Listen && rt.Policy.Reply == false && !mentionsMe {
+	taskCard := runtimeTaskCardForSelf(sm, buddyUserID, p.agentID)
+	var taskBinding *taskThreadBinding
+	if taskCard != nil {
+		updated, nextCard, ok := p.activateTaskCard(ctx, sm, taskCard)
+		if !ok {
+			return
+		}
+		sm = updated
+		taskCard = nextCard
+		cardID := taskCardID(taskCard)
+		threadID := taskThreadIDFromCard(taskCard)
+		binding := taskThreadBinding{
+			channelID: sm.ChannelID,
+			threadID:  threadID,
+			messageID: sm.ID,
+			cardID:    cardID,
+			title:     strings.TrimSpace(stringValue(taskCard["title"])),
+		}
+		if threadID != "" {
+			p.rememberTaskThreadBinding(binding)
+		}
+		taskBinding = &binding
+	} else if sm.ThreadID != "" {
+		if binding, ok := p.taskThreadBinding(sm.ThreadID); ok {
+			taskBinding = &binding
+		}
+	}
+	hasTaskContext := taskCard != nil || taskBinding != nil
+	if rt.Policy.Listen && rt.Policy.Reply == false && !mentionsMe && !hasTaskContext {
 		slog.Debug("shadowob: ignoring no-reply policy message", "channel_id", sm.ChannelID, "message_id", sm.ID)
 		return
 	}
-	if rt.Policy.MentionOnly && !mentionsMe {
+	if rt.Policy.MentionOnly && !mentionsMe && !hasTaskContext {
 		slog.Debug("shadowob: ignoring unmentioned message", "channel_id", sm.ChannelID, "message_id", sm.ID)
 		return
 	}
 
-	collaboration, ok := p.claimBuddyCollaboration(ctx, sm, rt)
-	if !ok {
-		return
+	var collaboration *buddyCollaborationMetadata
+	if !hasTaskContext {
+		var ok bool
+		collaboration, ok = p.claimBuddyCollaboration(ctx, sm, rt)
+		if !ok {
+			return
+		}
 	}
 
 	if p.handleLocalSlashPrompt(ctx, sm, false, collaboration) {
 		return
 	}
-	msg := p.toCoreMessage(ctx, sm, false, rt, collaboration)
+	if taskCard != nil {
+		sm.Content = formatTaskCardPrompt(sm.Content, sm, taskCard)
+	} else if taskBinding != nil {
+		sm.Content = formatTaskThreadPrompt(sm.Content, *taskBinding)
+	}
+	msg := p.toCoreMessage(ctx, sm, false, rt, collaboration, taskBinding)
 	if msg == nil {
 		return
 	}
@@ -621,7 +872,7 @@ func (p *Platform) handleDMMessage(ctx context.Context, sm shadowMessage) {
 	if p.handleLocalSlashPrompt(ctx, sm, true, nil) {
 		return
 	}
-	msg := p.toCoreMessage(ctx, sm, true, channelRuntime{}, nil)
+	msg := p.toCoreMessage(ctx, sm, true, channelRuntime{}, nil, nil)
 	if msg == nil {
 		return
 	}
@@ -650,7 +901,7 @@ func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage,
 			"packId":      match.Command.PackID,
 		},
 	})
-	rc := p.replyContextForMessage(sm, dm, collaboration)
+	rc := p.replyContextForMessage(sm, dm, collaboration, nil)
 	_, err := p.sendToReplyContext(ctx, rc, contentToSend, true, metadata)
 	if err != nil {
 		slog.Warn("shadowob: send slash form failed", "error", err)
@@ -658,7 +909,7 @@ func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage,
 	return true
 }
 
-func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool, rt channelRuntime, collaboration *buddyCollaborationMetadata) *core.Message {
+func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool, rt channelRuntime, collaboration *buddyCollaborationMetadata, taskBinding *taskThreadBinding) *core.Message {
 	body := sm.Content
 	if ir := interactiveResponse(sm.Metadata); ir != nil {
 		body = p.interactiveResponseContent(ctx, sm, ir)
@@ -677,7 +928,13 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 		authorName = authorID
 	}
 	effectiveThreadID := effectiveCollaborationThreadID(sm, collaboration)
+	if taskBinding != nil && taskBinding.threadID != "" {
+		effectiveThreadID = taskBinding.threadID
+	}
 	sessionKey := p.sessionKeyFor(sm, dm, authorID, effectiveThreadID)
+	if taskBinding != nil {
+		sessionKey = taskSessionKey(taskBinding.channelID, taskBinding.threadID, taskBinding.messageID, taskBinding.cardID)
+	}
 	channelKey := "shadowob:channel:" + sm.ChannelID
 	if dm {
 		channelKey = "shadowob:dm:" + sm.DMChannelID
@@ -704,7 +961,7 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 		Audio:        audio,
 		ChannelKey:   channelKey,
 		ExtraContent: formatBuddyCollaborationPrompt(collaboration),
-		ReplyCtx:     p.replyContextForMessage(sm, dm, collaboration),
+		ReplyCtx:     p.replyContextForMessage(sm, dm, collaboration, taskBinding),
 	}
 }
 
@@ -715,12 +972,20 @@ func effectiveCollaborationThreadID(sm shadowMessage, collaboration *buddyCollab
 	return sm.ThreadID
 }
 
-func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, collaboration *buddyCollaborationMetadata) replyContext {
+func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, collaboration *buddyCollaborationMetadata, taskBinding *taskThreadBinding) replyContext {
 	authorID := messageAuthorID(sm)
 	threadID := effectiveCollaborationThreadID(sm, collaboration)
 	replyToID := sm.ID
 	if collaboration != nil && collaboration.ReplyToID != "" {
 		replyToID = collaboration.ReplyToID
+	}
+	if taskBinding != nil {
+		threadID = taskBinding.threadID
+		replyToID = taskBinding.messageID
+	}
+	sessionKey := p.sessionKeyFor(sm, dm, authorID, threadID)
+	if taskBinding != nil {
+		sessionKey = taskSessionKey(taskBinding.channelID, taskBinding.threadID, taskBinding.messageID, taskBinding.cardID)
 	}
 	return replyContext{
 		channelID:     sm.ChannelID,
@@ -728,7 +993,7 @@ func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, collaborati
 		threadID:      threadID,
 		messageID:     sm.ID,
 		replyToID:     replyToID,
-		sessionKey:    p.sessionKeyFor(sm, dm, authorID, threadID),
+		sessionKey:    sessionKey,
 		collaboration: collaboration,
 	}
 }
@@ -1382,6 +1647,11 @@ func taskThreadIDFromMessage(message *shadowMessage, cardID string) string {
 			if nested, ok := card[key].(map[string]any); ok {
 				if threadID := stringMapValue(nested, "threadId", "taskThreadId"); threadID != "" {
 					return threadID
+				}
+				if task, ok := nested["task"].(map[string]any); ok {
+					if threadID := stringMapValue(task, "threadId", "thread_id", "taskThreadId"); threadID != "" {
+						return threadID
+					}
 				}
 			}
 		}
