@@ -786,10 +786,19 @@ func TestBuddyThreadTransientMentionIsIgnoredWhenMessageIsNotPersisted(t *testin
 		ThreadID:  "thread-1",
 		AuthorID:  "buddy-2",
 		Content:   "<@bot-1> temporary preview",
-		Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
 		Metadata: map[string]any{
 			"mentions": []any{
 				map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
+			},
+			"custom": map[string]any{
+				buddyDiscussionMetadataKey: map[string]any{
+					"rootMessageId": "root-1",
+					"threadId":      "thread-1",
+					"buddyUserIds":  []any{"bot-1", "buddy-2"},
+					"turn":          1,
+					"maxTurns":      4,
+					"speakerUserId": "buddy-2",
+				},
 			},
 		},
 	})

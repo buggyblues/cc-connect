@@ -837,7 +837,7 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 		return
 	}
 
-	isAuthorBuddy := sm.Author != nil && sm.Author.IsBot
+	isAuthorBuddy := messageAuthorIsBuddy(sm)
 	var threadBuddyDiscussion *buddyThreadDiscussionState
 	if isAuthorBuddy && !hasTaskContext {
 		replyToBuddy := policyConfigBool(rt.Policy.Config, "replyToBuddy", false)

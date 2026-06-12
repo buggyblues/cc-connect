@@ -137,6 +137,20 @@ func messageMentionsAnyBuddy(sm shadowMessage) bool {
 	return len(messageBuddyMentionUserIDs(sm)) > 0
 }
 
+func messageAuthorIsBuddy(sm shadowMessage) bool {
+	if sm.Author != nil && sm.Author.IsBot {
+		return true
+	}
+	authorID := messageAuthorID(sm)
+	if authorID == "" {
+		return false
+	}
+	if state := buddyDiscussionStateFromMetadata(sm.Metadata); state != nil {
+		return stringSliceContains(state.buddyUserIDs, authorID)
+	}
+	return false
+}
+
 func buddyDiscussionThreadName(content string) string {
 	preview := strings.Join(strings.Fields(content), " ")
 	if len([]rune(preview)) > 80 {
