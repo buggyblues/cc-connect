@@ -185,6 +185,11 @@ type Message struct {
 	ReplyCtx     any                 // platform-specific context needed for replying
 	FromVoice    bool                // true if message originated from voice transcription
 	ModeOverride string              // if set, temporarily override agent permission mode for this message
+	// SuppressQueueAck avoids sending a visible "message queued" status when
+	// this message is accepted into a busy session queue. Use this only for
+	// platform-internal follow-ups where a visible acknowledgement would pollute
+	// the conversation; ordinary user messages should keep the default false.
+	SuppressQueueAck bool
 	// IsPermissionResponse is set by inline-button / card-action paths in
 	// platforms when a synthesized message is forwarded as a permission
 	// decision (e.g. Telegram handleCallbackQuery for perm:allow/deny,
@@ -231,20 +236,20 @@ type UserQuestionOption struct {
 
 // Event represents a single piece of agent output streamed back to the engine.
 type Event struct {
-	Type         EventType
-	Content      string
-	ToolName     string         // populated for EventToolUse, EventPermissionRequest
-	ToolInput    string         // human-readable summary of tool input
-	ToolInputRaw map[string]any // raw tool input (for EventPermissionRequest, used in allow response)
-	ToolResult   string         // populated for EventToolResult
-	ToolStatus   string         // optional status for EventToolResult (e.g. completed/failed)
-	ToolExitCode *int           // optional exit code for EventToolResult
-	ToolSuccess  *bool          // optional success flag for EventToolResult
-	SessionID    string         // agent-managed session ID for conversation continuity
-	RequestID    string         // unique request ID for EventPermissionRequest
-	Questions    []UserQuestion // populated when ToolName == "AskUserQuestion"
-	Done         bool
-	Error        error
+	Type                     EventType
+	Content                  string
+	ToolName                 string         // populated for EventToolUse, EventPermissionRequest
+	ToolInput                string         // human-readable summary of tool input
+	ToolInputRaw             map[string]any // raw tool input (for EventPermissionRequest, used in allow response)
+	ToolResult               string         // populated for EventToolResult
+	ToolStatus               string         // optional status for EventToolResult (e.g. completed/failed)
+	ToolExitCode             *int           // optional exit code for EventToolResult
+	ToolSuccess              *bool          // optional success flag for EventToolResult
+	SessionID                string         // agent-managed session ID for conversation continuity
+	RequestID                string         // unique request ID for EventPermissionRequest
+	Questions                []UserQuestion // populated when ToolName == "AskUserQuestion"
+	Done                     bool
+	Error                    error
 	InputTokens              int // token usage from agent result events
 	OutputTokens             int
 	CacheCreationInputTokens int            // cache-write tokens (new content written to cache)

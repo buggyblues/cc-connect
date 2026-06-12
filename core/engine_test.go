@@ -8131,6 +8131,42 @@ func TestQueueMessageForBusySession_FIFODequeue(t *testing.T) {
 	state.mu.Unlock()
 }
 
+func TestQueueMessageForBusySession_SuppressQueueAck(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	sess := newQueuingSession("qs-silent")
+	e := NewEngine("test", &controllableAgent{nextSession: sess}, []Platform{p}, "", LangEnglish)
+
+	key := "test:silent-user"
+	state := &interactiveState{
+		agentSession: sess,
+		platform:     p,
+		replyCtx:     "ctx1",
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = state
+	e.interactiveMu.Unlock()
+
+	msg := &Message{
+		SessionKey:       key,
+		Content:          "internal follow-up",
+		ReplyCtx:         "ctx-follow-up",
+		SuppressQueueAck: true,
+	}
+	if !e.queueMessageForBusySession(p, msg, key) {
+		t.Fatal("expected message to be queued")
+	}
+
+	state.mu.Lock()
+	queued := len(state.pendingMessages)
+	state.mu.Unlock()
+	if queued != 1 {
+		t.Fatalf("pendingMessages len = %d, want 1", queued)
+	}
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("platform replies = %v, want none", sent)
+	}
+}
+
 func TestProcessInteractiveEvents_DrainsQueuedMessages(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	sess := newQueuingSession("qs2")

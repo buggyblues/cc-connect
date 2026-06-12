@@ -999,19 +999,20 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 	rc := p.replyContextForMessage(sm, dm, taskBinding)
 	rc.discussion = outboundBuddyDiscussionState(coordination, threadBuddyDiscussion)
 	return &core.Message{
-		SessionKey:   sessionKey,
-		Platform:     "shadowob",
-		MessageID:    sm.ID,
-		UserID:       authorID,
-		UserName:     authorName,
-		ChatName:     chatName,
-		Content:      body,
-		Images:       images,
-		Files:        files,
-		Audio:        audio,
-		ChannelKey:   channelKey,
-		ExtraContent: formatShadowExtraPrompt(coordination, threadBuddyFollowup, threadBuddyDiscussion, p.me.ID),
-		ReplyCtx:     rc,
+		SessionKey:       sessionKey,
+		Platform:         "shadowob",
+		MessageID:        sm.ID,
+		UserID:           authorID,
+		UserName:         authorName,
+		ChatName:         chatName,
+		Content:          body,
+		Images:           images,
+		Files:            files,
+		Audio:            audio,
+		ChannelKey:       channelKey,
+		ExtraContent:     formatShadowExtraPrompt(coordination, threadBuddyFollowup, threadBuddyDiscussion, p.me.ID),
+		ReplyCtx:         rc,
+		SuppressQueueAck: threadBuddyFollowup,
 	}
 }
 
