@@ -66,10 +66,14 @@ Supported Shadow policy config keys:
 | `buddyWhitelist` | empty | Optional list of sender Buddy IDs/usernames that can trigger conversation turns. |
 | `buddyBlacklist` | empty | Optional list of sender Buddy IDs/usernames that cannot trigger conversation turns. |
 
-For multi-Buddy mentions, cc-connect injects a short Thread coordination prompt
-through `ExtraContent` only for the first reactor. Replies, buttons, forms, and
-attachments use the resolved `threadId`/`replyToId` directly and do not carry
-internal collaboration metadata.
+For multi-Buddy mentions, cc-connect completes coordination inside the platform
+adapter before invoking the agent: it ensures the Thread, adds the 👌 reaction,
+reads the ordered reactions, and dispatches only the first reacting Buddy. The
+agent receives a short `ExtraContent` note that coordination is already complete
+and must not call the Shadow CLI/API, browser, or shell to inspect Thread or
+reaction state. Replies, buttons, forms, and attachments use the resolved
+`threadId`/`replyToId` directly and do not expose internal collaboration ids to
+the agent prompt.
 
 ## Media
 

@@ -128,11 +128,11 @@ func formatBuddyThreadCoordinationPrompt(coordination *buddyThreadCoordination) 
 	}
 	lines := []string{
 		"Shadow multi-Buddy Thread context:",
-		"- Root message id: " + coordination.rootMessageID,
-		"- Thread id: " + coordination.threadID,
-		"- Coordination reaction: " + coordination.reactionEmoji,
-		"- You are the first mentioned Buddy that sent the coordination reaction, so give one concise first reply in this Thread.",
-		"- Other mentioned Buddies will remain silent after their reaction.",
+		"- The Shadow adapter has already created the Thread, added the " + coordination.reactionEmoji + " coordination reaction, read the reaction order, and selected this Buddy as the only first speaker.",
+		"- Do not run shell commands, Shadow CLI/API calls, browser actions, or any other tool to inspect the Thread or reactions.",
+		"- Do not add, remove, or check coordination reactions again.",
+		"- Reply normally now; cc-connect will route your response into the Thread as a reply to the root message.",
+		"- Other mentioned Buddies will stay silent after their reaction.",
 		"- Do not send acknowledgement-only text such as \"I agree\" or \"no extra input\".",
 	}
 	return strings.Join(lines, "\n")

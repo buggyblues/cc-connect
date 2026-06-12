@@ -51,13 +51,19 @@ func TestFormatBuddyThreadCoordinationPromptIncludesRuntimeRules(t *testing.T) {
 
 	for _, want := range []string{
 		"Shadow multi-Buddy Thread context:",
-		"Root message id: root-1",
-		"Thread id: thread-1",
-		"Coordination reaction: 👌",
-		"first mentioned Buddy",
+		"already created the Thread",
+		"added the 👌 coordination reaction",
+		"selected this Buddy as the only first speaker",
+		"Do not run shell commands, Shadow CLI/API calls, browser actions",
+		"cc-connect will route your response into the Thread",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"root-1", "thread-1"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("prompt should not expose internal id %q:\n%s", forbidden, prompt)
 		}
 	}
 }
