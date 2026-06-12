@@ -381,6 +381,9 @@ func TestChannelMessageCreatesBuddyDiscussionThreadAndRepliesInThread(t *testing
 	if !strings.Contains(got.ExtraContent, "Shadow multi-Buddy Thread context") {
 		t.Fatalf("missing multi-Buddy prompt: %q", got.ExtraContent)
 	}
+	if strings.Contains(got.Content, "<@bot-1>") || strings.Contains(got.Content, "<@bot-2>") {
+		t.Fatalf("routing Buddy mentions should be stripped from model body: %q", got.Content)
+	}
 	rc, ok := got.ReplyCtx.(replyContext)
 	if !ok {
 		t.Fatalf("reply context type = %T", got.ReplyCtx)
@@ -389,11 +392,14 @@ func TestChannelMessageCreatesBuddyDiscussionThreadAndRepliesInThread(t *testing
 		t.Fatalf("reply context = %#v", rc)
 	}
 
-	if err := p.Reply(context.Background(), got.ReplyCtx, "done"); err != nil {
+	if err := p.Reply(context.Background(), got.ReplyCtx, "done <@bot-1>"); err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
 	if sendBody["threadId"] != "thread-collab" || sendBody["replyToId"] != "root-1" {
 		t.Fatalf("send target = %#v", sendBody)
+	}
+	if content := stringValue(sendBody["content"]); strings.Contains(content, "<@bot-1>") || !strings.Contains(content, "<@bot-2>") {
+		t.Fatalf("self mention should be rewritten to the other Buddy: %q", content)
 	}
 }
 

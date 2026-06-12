@@ -959,6 +959,11 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 	} else if match := matchSlashCommand(body, p.localCommands); match != nil {
 		body = formatSlashCommandPrompt(body, match)
 	}
+	if coordination != nil {
+		body = stripBuddyMentionTokens(body, coordination.buddyUserIDs)
+	} else if threadBuddyFollowup {
+		body = stripBuddyMentionTokens(body, []string{p.me.ID})
+	}
 
 	images, files, audio, cleanBody := p.resolveInboundMedia(ctx, sm, body)
 	if cleanBody != "" {
@@ -1771,6 +1776,7 @@ func stringMapValue(values map[string]any, keys ...string) string {
 }
 
 func (p *Platform) sendToReplyContext(ctx context.Context, rc replyContext, content string, reply bool, metadata map[string]any) (*shadowMessage, error) {
+	content = sanitizeBuddyDiscussionOutboundContent(content, rc.discussion, p.me.ID)
 	if strings.TrimSpace(content) == "" {
 		content = "\u200B"
 	}

@@ -164,9 +164,11 @@ func formatBuddyThreadCoordinationPrompt(coordination *buddyThreadCoordination) 
 		"- Do not run shell commands, Shadow CLI/API calls, browser actions, or any other tool to inspect the Thread or reactions.",
 		"- Do not add, remove, or check coordination reactions again.",
 		"- Reply normally now; cc-connect will route your response into the Thread as a reply to the root message.",
+		"- The original message's raw Buddy mention tokens are routing metadata; do not copy them.",
 		"- Other mentioned Buddies will not answer the root message directly; they can answer later only if explicitly mentioned in this Thread.",
 		"- This is Buddy discussion turn " + intString(turn) + " of " + intString(maxTurns) + ".",
 		"- If the user asked for discussion, debate, review, or comparison, invite exactly one other mentioned Buddy to take the next turn by using its canonical mention token.",
+		"- Never mention yourself. Use only the available follow-up token list when handing off.",
 		"- Mention at most one Buddy when handing off the next turn, and keep the answer substantive before the mention.",
 		"- Close without a Buddy mention when the answer is settled or the planned turn limit has been reached.",
 		"- If the user's request only needs a single answer, do not invite a follow-up.",
@@ -184,6 +186,7 @@ func formatBuddyThreadFollowupPrompt(state *buddyThreadDiscussionState, meID str
 		"- Another Buddy explicitly mentioned you inside this Thread.",
 		"- Reply with a substantive supplement, correction, or disagreement.",
 		"- Do not send acknowledgement-only text such as \"I agree\" or \"no extra input\".",
+		"- Do not copy raw mention tokens from the message body.",
 	}
 	if state == nil {
 		lines = append(lines,
@@ -197,6 +200,7 @@ func formatBuddyThreadFollowupPrompt(state *buddyThreadDiscussionState, meID str
 	if state.turn < state.maxTurns && len(nextTokens) > 0 {
 		lines = append(lines,
 			"- If another round would improve the answer, invite exactly one participant for the next turn by using its canonical mention token.",
+			"- Never mention yourself.",
 			"- Available next-turn mention tokens: "+strings.Join(nextTokens, ", "),
 		)
 	} else {
@@ -329,6 +333,60 @@ func canonicalBuddyMentionTokens(userIDs []string) []string {
 		tokens = append(tokens, "<@"+userID+">")
 	}
 	return tokens
+}
+
+func stripBuddyMentionTokens(content string, userIDs []string) string {
+	out := content
+	for _, userID := range userIDs {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
+			continue
+		}
+		out = strings.ReplaceAll(out, "<@"+userID+">", "")
+	}
+	return strings.TrimSpace(strings.Join(strings.Fields(out), " "))
+}
+
+func sanitizeBuddyDiscussionOutboundContent(content string, state *buddyThreadDiscussionState, speakerUserID string) string {
+	if state == nil || strings.TrimSpace(content) == "" {
+		return content
+	}
+	if state.turn >= state.maxTurns {
+		return strings.TrimSpace(stripBuddyMentionTokensPreserveLayout(content, state.buddyUserIDs))
+	}
+	speakerUserID = strings.TrimSpace(speakerUserID)
+	if speakerUserID == "" {
+		return content
+	}
+	selfToken := "<@" + speakerUserID + ">"
+	if !strings.Contains(content, selfToken) {
+		return content
+	}
+	nextTokens := canonicalBuddyMentionTokens(otherBuddyUserIDs(state.buddyUserIDs, speakerUserID))
+	hasOtherToken := false
+	for _, token := range nextTokens {
+		if strings.Contains(content, token) {
+			hasOtherToken = true
+			break
+		}
+	}
+	replacement := ""
+	if !hasOtherToken && len(nextTokens) > 0 {
+		replacement = nextTokens[0]
+	}
+	return strings.TrimSpace(strings.ReplaceAll(content, selfToken, replacement))
+}
+
+func stripBuddyMentionTokensPreserveLayout(content string, userIDs []string) string {
+	out := content
+	for _, userID := range userIDs {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
+			continue
+		}
+		out = strings.ReplaceAll(out, "<@"+userID+">", "")
+	}
+	return out
 }
 
 func intString(value int) string {
