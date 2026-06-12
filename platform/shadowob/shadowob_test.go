@@ -297,38 +297,32 @@ func TestMessageNewSkipsSentMessageEchoByID(t *testing.T) {
 	}
 }
 
-func TestChannelMessageClaimsHumanBuddyCollaborationAndRepliesWithMetadata(t *testing.T) {
-	var claimReq claimBuddyReplyInput
+func TestChannelMessageCreatesBuddyDiscussionThreadAndRepliesInThread(t *testing.T) {
+	var ensuredBody map[string]any
+	var reactedBody map[string]any
 	var sendBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/buddy-collaborations/claim":
+		case "/api/messages/root-1/thread":
 			if r.Method != http.MethodPost {
-				t.Fatalf("claim method = %s, want POST", r.Method)
+				t.Fatalf("ensure thread method = %s, want POST", r.Method)
 			}
-			if err := json.NewDecoder(r.Body).Decode(&claimReq); err != nil {
-				t.Fatalf("decode claim: %v", err)
+			if err := json.NewDecoder(r.Body).Decode(&ensuredBody); err != nil {
+				t.Fatalf("decode ensure thread: %v", err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":              true,
-				"collaborationId": "collab-1",
-				"turn":            1,
-				"replyToId":       "root-1",
-				"target":          "thread",
-				"threadId":        "thread-collab",
-				"metadata": map[string]any{
-					"collaboration": map[string]any{
-						"id":                 "collab-1",
-						"rootMessageId":      "root-1",
-						"buddyId":            "buddy-1",
-						"turn":               1,
-						"target":             "thread",
-						"threadId":           "thread-collab",
-						"suggestedTextLimit": 120,
-						"replyDensity":       "brief",
-					},
-				},
-			})
+			_ = json.NewEncoder(w).Encode(shadowThread{ID: "thread-collab", ChannelID: "ch1", ParentMessageID: "root-1"})
+		case "/api/messages/root-1/reactions":
+			if r.Method == http.MethodPost {
+				if err := json.NewDecoder(r.Body).Decode(&reactedBody); err != nil {
+					t.Fatalf("decode reaction: %v", err)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+				return
+			}
+			if r.Method != http.MethodGet {
+				t.Fatalf("reactions method = %s", r.Method)
+			}
+			_ = json.NewEncoder(w).Encode([]shadowReactionGroup{{Emoji: "👌", Count: 2, UserIDs: []string{"bot-1", "bot-2"}}})
 		case "/api/channels/ch1/messages":
 			if r.Method != http.MethodPost {
 				t.Fatalf("send method = %s, want POST", r.Method)
@@ -344,13 +338,13 @@ func TestChannelMessageClaimsHumanBuddyCollaborationAndRepliesWithMetadata(t *te
 	defer server.Close()
 
 	p := newShadowOBTestPlatform(t, server.URL)
+	p.me = shadowUser{ID: "bot-1", Username: "buddy"}
 	p.channels["ch1"] = channelRuntime{
 		ID:   "ch1",
 		Name: "general",
 		Policy: shadowChannelPolicy{
 			Listen: true,
 			Reply:  true,
-			Config: map[string]any{"maxBuddyTurns": 3},
 		},
 	}
 
@@ -362,24 +356,30 @@ func TestChannelMessageClaimsHumanBuddyCollaborationAndRepliesWithMetadata(t *te
 		ID:        "root-1",
 		ChannelID: "ch1",
 		AuthorID:  "human-1",
-		Content:   "hello",
+		Content:   "hello <@bot-1> <@bot-2>",
 		Author:    &shadowAuthor{ID: "human-1", Username: "alice"},
+		Metadata: map[string]any{
+			"mentions": []any{
+				map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
+				map[string]any{"kind": "buddy", "userId": "bot-2", "targetId": "bot-2", "username": "other-buddy"},
+			},
+		},
 	})
 
-	if claimReq.Mode != "initial" || claimReq.RootMessageID != "root-1" || claimReq.ReplyToMessageID != "root-1" {
-		t.Fatalf("claim request = %#v", claimReq)
+	if ensuredBody["name"] == "" {
+		t.Fatalf("ensure thread body = %#v", ensuredBody)
 	}
-	if claimReq.BuddyID != "buddy-1" || claimReq.MaxTurns != 3 {
-		t.Fatalf("claim buddy/max turns = %#v", claimReq)
+	if reactedBody["emoji"] != "👌" {
+		t.Fatalf("reaction body = %#v", reactedBody)
 	}
 	if got == nil {
-		t.Fatal("expected dispatch after successful claim")
+		t.Fatal("expected dispatch after first reaction")
 	}
 	if got.ChannelKey != "shadowob:channel:ch1:thread:thread-collab" {
 		t.Fatalf("channel key = %q", got.ChannelKey)
 	}
-	if !strings.Contains(got.ExtraContent, "Shadow Buddy collaboration context") {
-		t.Fatalf("missing collaboration prompt: %q", got.ExtraContent)
+	if !strings.Contains(got.ExtraContent, "Shadow multi-Buddy Thread context") {
+		t.Fatalf("missing multi-Buddy prompt: %q", got.ExtraContent)
 	}
 	rc, ok := got.ReplyCtx.(replyContext)
 	if !ok {
@@ -388,9 +388,6 @@ func TestChannelMessageClaimsHumanBuddyCollaborationAndRepliesWithMetadata(t *te
 	if rc.threadID != "thread-collab" || rc.replyToID != "root-1" {
 		t.Fatalf("reply context = %#v", rc)
 	}
-	if rc.collaboration == nil || rc.collaboration.ID != "collab-1" {
-		t.Fatalf("collaboration = %#v", rc.collaboration)
-	}
 
 	if err := p.Reply(context.Background(), got.ReplyCtx, "done"); err != nil {
 		t.Fatalf("Reply: %v", err)
@@ -398,31 +395,27 @@ func TestChannelMessageClaimsHumanBuddyCollaborationAndRepliesWithMetadata(t *te
 	if sendBody["threadId"] != "thread-collab" || sendBody["replyToId"] != "root-1" {
 		t.Fatalf("send target = %#v", sendBody)
 	}
-	metadata, ok := sendBody["metadata"].(map[string]any)
-	if !ok {
-		t.Fatalf("metadata = %#v", sendBody["metadata"])
-	}
-	collaboration, ok := metadata["collaboration"].(map[string]any)
-	if !ok {
-		t.Fatalf("collaboration metadata = %#v", metadata["collaboration"])
-	}
-	if collaboration["id"] != "collab-1" || collaboration["rootMessageId"] != "root-1" {
-		t.Fatalf("collaboration metadata = %#v", collaboration)
-	}
 }
 
-func TestBuddyMessageWithoutCollaborationIsSkipped(t *testing.T) {
-	claimCount := 0
+func TestMultiBuddyNonFirstReactorIsSilent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/buddy-collaborations/claim" {
-			claimCount++
-			t.Fatalf("claim should not be called without collaboration metadata")
+		switch r.URL.Path {
+		case "/api/messages/root-1/thread":
+			_ = json.NewEncoder(w).Encode(shadowThread{ID: "thread-collab", ChannelID: "ch1", ParentMessageID: "root-1"})
+		case "/api/messages/root-1/reactions":
+			if r.Method == http.MethodPost {
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]shadowReactionGroup{{Emoji: "👌", Count: 2, UserIDs: []string{"bot-2", "bot-1"}}})
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	defer server.Close()
 
 	p := newShadowOBTestPlatform(t, server.URL)
+	p.me = shadowUser{ID: "bot-1", Username: "buddy"}
 	p.channels["ch1"] = channelRuntime{
 		ID: "ch1",
 		Policy: shadowChannelPolicy{
@@ -431,32 +424,25 @@ func TestBuddyMessageWithoutCollaborationIsSkipped(t *testing.T) {
 		},
 	}
 	p.handler = func(_ core.Platform, msg *core.Message) {
-		t.Fatalf("Buddy message without collaboration should not dispatch: %#v", msg)
+		t.Fatalf("non-first multi-Buddy reactor should not dispatch: %#v", msg)
 	}
 	p.handleChannelMessage(context.Background(), shadowMessage{
-		ID:        "buddy-msg-1",
+		ID:        "root-1",
 		ChannelID: "ch1",
-		AuthorID:  "buddy-2",
-		Content:   "I can help",
-		Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
+		AuthorID:  "human-1",
+		Content:   "hello <@bot-1> <@bot-2>",
+		Author:    &shadowAuthor{ID: "human-1", Username: "alice"},
+		Metadata: map[string]any{
+			"mentions": []any{
+				map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
+				map[string]any{"kind": "buddy", "userId": "bot-2", "targetId": "bot-2", "username": "other-buddy"},
+			},
+		},
 	})
-	if claimCount != 0 {
-		t.Fatalf("claim count = %d, want 0", claimCount)
-	}
 }
 
-func TestBuddyMessageWithCollaborationHonorsExplicitReplyToBuddyFalse(t *testing.T) {
-	claimCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/buddy-collaborations/claim" {
-			claimCount++
-			t.Fatalf("claim should not be called when replyToBuddy=false")
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
-	p := newShadowOBTestPlatform(t, server.URL)
+func TestBuddyMainChannelMessageDefaultsToSkip(t *testing.T) {
+	p := newShadowOBTestPlatform(t, "https://shadow.example.com")
 	p.channels["ch1"] = channelRuntime{
 		ID: "ch1",
 		Policy: shadowChannelPolicy{
@@ -466,7 +452,7 @@ func TestBuddyMessageWithCollaborationHonorsExplicitReplyToBuddyFalse(t *testing
 		},
 	}
 	p.handler = func(_ core.Platform, msg *core.Message) {
-		t.Fatalf("Buddy message should not dispatch when replyToBuddy=false: %#v", msg)
+		t.Fatalf("Buddy main-channel message should not dispatch by default: %#v", msg)
 	}
 	p.handleChannelMessage(context.Background(), shadowMessage{
 		ID:        "buddy-msg-1",
@@ -474,41 +460,11 @@ func TestBuddyMessageWithCollaborationHonorsExplicitReplyToBuddyFalse(t *testing
 		AuthorID:  "buddy-2",
 		Content:   "One more point.",
 		Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
-		Metadata: map[string]any{
-			"collaboration": map[string]any{
-				"id":            "collab-1",
-				"rootMessageId": "root-1",
-				"buddyId":       "buddy-2",
-				"turn":          1,
-			},
-		},
 	})
-	if claimCount != 0 {
-		t.Fatalf("claim count = %d, want 0", claimCount)
-	}
 }
 
 func TestExplicitMentionOverridesDisabledReplyPolicy(t *testing.T) {
-	var claimReq claimBuddyReplyInput
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/buddy-collaborations/claim" {
-			http.NotFound(w, r)
-			return
-		}
-		if err := json.NewDecoder(r.Body).Decode(&claimReq); err != nil {
-			t.Fatalf("decode claim: %v", err)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":              true,
-			"collaborationId": "collab-mention",
-			"turn":            1,
-			"replyToId":       "root-mention",
-			"target":          "main",
-		})
-	}))
-	defer server.Close()
-
-	p := newShadowOBTestPlatform(t, server.URL)
+	p := newShadowOBTestPlatform(t, "https://shadow.example.com")
 	p.me = shadowUser{ID: "buddy-user", Username: "buddy"}
 	p.channels["ch1"] = channelRuntime{
 		ID: "ch1",
@@ -528,10 +484,12 @@ func TestExplicitMentionOverridesDisabledReplyPolicy(t *testing.T) {
 		AuthorID:  "human-1",
 		Content:   "@buddy please check",
 		Author:    &shadowAuthor{ID: "human-1", Username: "alice"},
+		Metadata: map[string]any{
+			"mentions": []any{
+				map[string]any{"kind": "buddy", "userId": "buddy-user", "targetId": "buddy-user", "username": "buddy"},
+			},
+		},
 	})
-	if claimReq.Mode != "initial" || claimReq.RootMessageID != "root-mention" {
-		t.Fatalf("claim request = %#v", claimReq)
-	}
 	if got == nil {
 		t.Fatal("expected explicit mention to dispatch despite disabled reply policy")
 	}
@@ -594,8 +552,6 @@ func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
 			}
 			sentMessages = append(sentMessages, body)
 			_ = json.NewEncoder(w).Encode(shadowMessage{ID: fmt.Sprintf("sent-%d", len(sentMessages)), ChannelID: "ch1", Content: stringValue(body["content"])})
-		case r.URL.Path == "/api/buddy-collaborations/claim":
-			t.Fatalf("task context should not call collaboration claim")
 		default:
 			http.NotFound(w, r)
 		}
@@ -700,34 +656,15 @@ func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
 	}
 }
 
-func TestBuddyMessageWithCollaborationClaimsConversationTurn(t *testing.T) {
-	var claimReq claimBuddyReplyInput
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/buddy-collaborations/claim" {
-			http.NotFound(w, r)
-			return
-		}
-		if err := json.NewDecoder(r.Body).Decode(&claimReq); err != nil {
-			t.Fatalf("decode claim: %v", err)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":              true,
-			"collaborationId": "collab-1",
-			"turn":            2,
-			"replyToId":       "buddy-msg-1",
-			"target":          "thread",
-			"threadId":        "thread-collab",
-		})
-	}))
-	defer server.Close()
-
-	p := newShadowOBTestPlatform(t, server.URL)
+func TestBuddyThreadMessageWithExplicitMentionBypassesReplyToBuddyFalse(t *testing.T) {
+	p := newShadowOBTestPlatform(t, "https://shadow.example.com")
+	p.me = shadowUser{ID: "bot-1", Username: "buddy"}
 	p.channels["ch1"] = channelRuntime{
 		ID: "ch1",
 		Policy: shadowChannelPolicy{
 			Listen: true,
 			Reply:  true,
-			Config: map[string]any{"maxBuddyTurns": 2},
+			Config: map[string]any{"replyToBuddy": false},
 		},
 	}
 	var got *core.Message
@@ -737,38 +674,25 @@ func TestBuddyMessageWithCollaborationClaimsConversationTurn(t *testing.T) {
 	p.handleChannelMessage(context.Background(), shadowMessage{
 		ID:        "buddy-msg-1",
 		ChannelID: "ch1",
+		ThreadID:  "thread-1",
 		AuthorID:  "buddy-2",
-		Content:   "One more point.",
+		Content:   "<@bot-1> One more point.",
 		Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
 		Metadata: map[string]any{
-			"collaboration": map[string]any{
-				"id":            "collab-1",
-				"rootMessageId": "root-1",
-				"buddyId":       "buddy-2",
-				"turn":          1,
-				"target":        "thread",
-				"threadId":      "thread-collab",
+			"mentions": []any{
+				map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
 			},
 		},
 	})
 
-	if claimReq.Mode != "conversation" || claimReq.RootMessageID != "root-1" || claimReq.ReplyToMessageID != "buddy-msg-1" {
-		t.Fatalf("claim request = %#v", claimReq)
-	}
-	if claimReq.MaxTurns != 2 {
-		t.Fatalf("max turns = %d, want 2", claimReq.MaxTurns)
-	}
 	if got == nil {
-		t.Fatal("expected conversation dispatch")
-	}
-	if !strings.Contains(got.ExtraContent, "This Buddy turn: 2") {
-		t.Fatalf("missing turn context: %q", got.ExtraContent)
+		t.Fatal("expected mentioned thread dispatch")
 	}
 	rc, ok := got.ReplyCtx.(replyContext)
 	if !ok {
 		t.Fatalf("reply context type = %T", got.ReplyCtx)
 	}
-	if rc.replyToID != "buddy-msg-1" || rc.threadID != "thread-collab" {
+	if rc.replyToID != "buddy-msg-1" || rc.threadID != "thread-1" {
 		t.Fatalf("reply context = %#v", rc)
 	}
 }

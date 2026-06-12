@@ -41,7 +41,6 @@ type replyContext struct {
 	messageID     string
 	replyToID     string
 	sessionKey    string
-	collaboration *buddyCollaborationMetadata
 	taskMessageID string
 	taskCardID    string
 	taskComplete  bool
@@ -832,21 +831,41 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 		slog.Debug("shadowob: ignoring no-reply policy message", "channel_id", sm.ChannelID, "message_id", sm.ID)
 		return
 	}
-	if rt.Policy.MentionOnly && !mentionsMe && !hasTaskContext {
+	if rt.Policy.MentionOnly && !mentionsMe && !hasTaskContext && sm.ThreadID == "" {
 		slog.Debug("shadowob: ignoring unmentioned message", "channel_id", sm.ChannelID, "message_id", sm.ID)
 		return
 	}
 
-	var collaboration *buddyCollaborationMetadata
-	if !hasTaskContext {
-		var ok bool
-		collaboration, ok = p.claimBuddyCollaboration(ctx, sm, rt)
-		if !ok {
+	isAuthorBuddy := sm.Author != nil && sm.Author.IsBot
+	if isAuthorBuddy && !hasTaskContext {
+		replyToBuddy := policyConfigBool(rt.Policy.Config, "replyToBuddy", false)
+		if !replyToBuddy && sm.ThreadID == "" {
+			slog.Debug("shadowob: ignoring Buddy main-channel message because replyToBuddy=false", "channel_id", sm.ChannelID, "message_id", sm.ID)
+			return
+		}
+		if sm.ThreadID != "" && !mentionsMe {
+			slog.Debug("shadowob: ignoring Buddy thread message without explicit mention", "channel_id", sm.ChannelID, "message_id", sm.ID)
+			return
+		}
+		if !senderBuddyAllowed(rt.Policy.Config, sm) {
+			slog.Debug("shadowob: ignoring Buddy message because buddy allowlist policy denied it", "channel_id", sm.ChannelID, "message_id", sm.ID)
 			return
 		}
 	}
+	if !isAuthorBuddy && messageMentionsAnyBuddy(sm) && !mentionsMe && !hasTaskContext {
+		slog.Debug("shadowob: ignoring message that targets other Buddies", "channel_id", sm.ChannelID, "message_id", sm.ID)
+		return
+	}
 
-	if p.handleLocalSlashPrompt(ctx, sm, false, collaboration) {
+	coordination, ok := p.coordinateBuddyThread(ctx, sm)
+	if !ok {
+		return
+	}
+	if coordination != nil {
+		sm.ThreadID = coordination.threadID
+	}
+
+	if p.handleLocalSlashPrompt(ctx, sm, false) {
 		return
 	}
 	if taskCard != nil {
@@ -854,7 +873,7 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 	} else if taskBinding != nil {
 		sm.Content = formatTaskThreadPrompt(sm.Content, *taskBinding)
 	}
-	msg := p.toCoreMessage(ctx, sm, false, rt, collaboration, taskBinding)
+	msg := p.toCoreMessage(ctx, sm, false, rt, coordination, taskBinding)
 	if msg == nil {
 		return
 	}
@@ -872,7 +891,7 @@ func (p *Platform) handleDMMessage(ctx context.Context, sm shadowMessage) {
 		return
 	}
 	p.addDM(sm.DMChannelID)
-	if p.handleLocalSlashPrompt(ctx, sm, true, nil) {
+	if p.handleLocalSlashPrompt(ctx, sm, true) {
 		return
 	}
 	msg := p.toCoreMessage(ctx, sm, true, channelRuntime{}, nil, nil)
@@ -882,7 +901,7 @@ func (p *Platform) handleDMMessage(ctx context.Context, sm shadowMessage) {
 	p.dispatch(msg)
 }
 
-func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage, dm bool, collaboration *buddyCollaborationMetadata) bool {
+func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage, dm bool) bool {
 	content := strings.TrimSpace(sm.Content)
 	if len(p.localCommands) == 0 || content == "" || content[0] != '/' || interactiveResponse(sm.Metadata) != nil {
 		return false
@@ -904,7 +923,7 @@ func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage,
 			"packId":      match.Command.PackID,
 		},
 	})
-	rc := p.replyContextForMessage(sm, dm, collaboration, nil)
+	rc := p.replyContextForMessage(sm, dm, nil)
 	_, err := p.sendToReplyContext(ctx, rc, contentToSend, true, metadata)
 	if err != nil {
 		slog.Warn("shadowob: send slash form failed", "error", err)
@@ -912,7 +931,7 @@ func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage,
 	return true
 }
 
-func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool, rt channelRuntime, collaboration *buddyCollaborationMetadata, taskBinding *taskThreadBinding) *core.Message {
+func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool, rt channelRuntime, coordination *buddyThreadCoordination, taskBinding *taskThreadBinding) *core.Message {
 	body := sm.Content
 	if ir := interactiveResponse(sm.Metadata); ir != nil {
 		body = p.interactiveResponseContent(ctx, sm, ir)
@@ -930,7 +949,7 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 	if authorName == "" {
 		authorName = authorID
 	}
-	effectiveThreadID := effectiveCollaborationThreadID(sm, collaboration)
+	effectiveThreadID := sm.ThreadID
 	if taskBinding != nil && taskBinding.threadID != "" {
 		effectiveThreadID = taskBinding.threadID
 	}
@@ -963,25 +982,15 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 		Files:        files,
 		Audio:        audio,
 		ChannelKey:   channelKey,
-		ExtraContent: formatBuddyCollaborationPrompt(collaboration),
-		ReplyCtx:     p.replyContextForMessage(sm, dm, collaboration, taskBinding),
+		ExtraContent: formatBuddyThreadCoordinationPrompt(coordination),
+		ReplyCtx:     p.replyContextForMessage(sm, dm, taskBinding),
 	}
 }
 
-func effectiveCollaborationThreadID(sm shadowMessage, collaboration *buddyCollaborationMetadata) string {
-	if collaboration != nil && collaboration.Target == "thread" && collaboration.ThreadID != "" {
-		return collaboration.ThreadID
-	}
-	return sm.ThreadID
-}
-
-func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, collaboration *buddyCollaborationMetadata, taskBinding *taskThreadBinding) replyContext {
+func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, taskBinding *taskThreadBinding) replyContext {
 	authorID := messageAuthorID(sm)
-	threadID := effectiveCollaborationThreadID(sm, collaboration)
+	threadID := sm.ThreadID
 	replyToID := sm.ID
-	if collaboration != nil && collaboration.ReplyToID != "" {
-		replyToID = collaboration.ReplyToID
-	}
 	if taskBinding != nil {
 		threadID = taskBinding.threadID
 		replyToID = taskBinding.messageID
@@ -1003,7 +1012,6 @@ func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, collaborati
 		messageID:     sm.ID,
 		replyToID:     replyToID,
 		sessionKey:    sessionKey,
-		collaboration: collaboration,
 		taskMessageID: taskMessageID,
 		taskCardID:    taskCardID,
 		taskComplete:  taskComplete,
@@ -1358,7 +1366,7 @@ func (p *Platform) sendAttachment(ctx context.Context, rc replyContext, data []b
 	}
 
 	content := "\u200B"
-	metadata := metadataWithCollaboration(p.deliveryMetadata(nil), rc.collaboration)
+	metadata := p.deliveryMetadata(nil)
 	p.mu.Lock()
 	if id := deliveryID(metadata); id != "" {
 		p.sentDeliveryIDs[id] = time.Now()
@@ -1709,7 +1717,6 @@ func (p *Platform) sendToReplyContext(ctx context.Context, rc replyContext, cont
 	} else if deliveryID(metadata) == "" {
 		metadata = p.deliveryMetadata(metadata)
 	}
-	metadata = metadataWithCollaboration(metadata, rc.collaboration)
 	if id := deliveryID(metadata); id != "" {
 		p.mu.Lock()
 		p.sentDeliveryIDs[id] = time.Now()
@@ -1744,17 +1751,6 @@ func (p *Platform) sendToReplyContext(ctx context.Context, rc replyContext, cont
 	}
 	p.recordSentMessageID(msg)
 	return msg, nil
-}
-
-func metadataWithCollaboration(metadata map[string]any, collaboration *buddyCollaborationMetadata) map[string]any {
-	if collaboration == nil {
-		return metadata
-	}
-	if metadata == nil {
-		metadata = map[string]any{}
-	}
-	metadata["collaboration"] = collaboration
-	return metadata
 }
 
 func (p *Platform) recordSentMessageID(msg *shadowMessage) {

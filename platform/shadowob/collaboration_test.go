@@ -5,35 +5,23 @@ import (
 	"testing"
 )
 
-func TestMessageBuddyCollaborationReadsDirectAndCustomMetadata(t *testing.T) {
-	direct := messageBuddyCollaboration(map[string]any{
-		"collaboration": map[string]any{
-			"id":            "collab-1",
-			"rootMessageId": "root-1",
-			"buddyId":       "buddy-1",
-			"turn":          1,
-		},
-	})
-	if direct == nil || direct.ID != "collab-1" || direct.RootMessageID != "root-1" {
-		t.Fatalf("direct collaboration = %#v", direct)
-	}
-
-	custom := messageBuddyCollaboration(map[string]any{
-		"custom": map[string]any{
-			"collaboration": map[string]any{
-				"id":            "collab-2",
-				"rootMessageId": "root-2",
-				"buddyId":       "buddy-2",
-				"turn":          2,
+func TestMessageBuddyMentionUserIDs(t *testing.T) {
+	msg := shadowMessage{
+		Metadata: map[string]any{
+			"mentions": []any{
+				map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1"},
+				map[string]any{"kind": "user", "userId": "human-1", "targetId": "human-1"},
+				map[string]any{"kind": "user", "userId": "bot-2", "targetId": "bot-2", "isBot": true},
+				map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1"},
 			},
 		},
-	})
-	if custom == nil || custom.ID != "collab-2" || custom.RootMessageID != "root-2" {
-		t.Fatalf("custom collaboration = %#v", custom)
 	}
-
-	if invalid := messageBuddyCollaboration(map[string]any{"collaboration": map[string]any{"id": "x"}}); invalid != nil {
-		t.Fatalf("invalid collaboration = %#v, want nil", invalid)
+	got := messageBuddyMentionUserIDs(msg)
+	if len(got) != 2 || got[0] != "bot-1" || got[1] != "bot-2" {
+		t.Fatalf("messageBuddyMentionUserIDs = %#v", got)
+	}
+	if !messageMentionsAnyBuddy(msg) {
+		t.Fatal("messageMentionsAnyBuddy = false")
 	}
 }
 
@@ -53,25 +41,20 @@ func TestSenderBuddyAllowedAppliesBlacklistBeforeWhitelist(t *testing.T) {
 	}
 }
 
-func TestFormatBuddyCollaborationPromptIncludesRuntimeRules(t *testing.T) {
-	prompt := formatBuddyCollaborationPrompt(&buddyCollaborationMetadata{
-		ID:                 "collab-1",
-		RootMessageID:      "root-1",
-		BuddyID:            "buddy-1",
-		Turn:               2,
-		Target:             "thread",
-		ThreadID:           "thread-1",
-		SuggestedTextLimit: 120,
-		ReplyDensity:       "short",
+func TestFormatBuddyThreadCoordinationPromptIncludesRuntimeRules(t *testing.T) {
+	prompt := formatBuddyThreadCoordinationPrompt(&buddyThreadCoordination{
+		rootMessageID: "root-1",
+		threadID:      "thread-1",
+		buddyUserIDs:  []string{"bot-1", "bot-2"},
+		reactionEmoji: "👌",
 	})
 
 	for _, want := range []string{
-		"Shadow Buddy collaboration context:",
-		"Collaboration id: collab-1",
-		"This Buddy turn: 2",
-		"Platform thread id: thread-1",
-		"not permission to run tools",
-		"Do not create memories",
+		"Shadow multi-Buddy Thread context:",
+		"Root message id: root-1",
+		"Thread id: thread-1",
+		"Coordination reaction: 👌",
+		"first mentioned Buddy",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

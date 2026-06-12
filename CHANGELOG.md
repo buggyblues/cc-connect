@@ -4,11 +4,11 @@
 
 ### New Features
 - Merge upstream `chenhg5/cc-connect` changes through June 10, 2026 while preserving the ShadowOB and WPS Xiezuo fork platforms.
-- ShadowOB channel replies now claim Buddy collaboration turns for no-mention, single-mention, and multi-mention human messages before dispatching to the agent.
-- ShadowOB Buddy-to-Buddy replies now require collaboration metadata plus `replyToBuddy=true`, then reuse the server-side collaboration record for conversation turns.
+- ShadowOB multi-Buddy mentions now use normal Shadow Threads plus 👌 first-reaction coordination before dispatching to the agent.
+- ShadowOB Buddy-to-Buddy main-channel replies are disabled by default; `replyToBuddy` only applies to the ordinary main channel and does not block Thread or Inbox task replies.
 
 ### Fixed
-- ShadowOB replies, forms, buttons, and attachments now carry `metadata.collaboration` and use the `threadId`/`replyToId` returned by Shadow, keeping multi-Buddy turns in the same thread.
+- ShadowOB replies, forms, buttons, and attachments now use resolved `threadId`/`replyToId` directly without internal collaboration metadata.
 - Explicitly mentioning the current ShadowOB Buddy can override ordinary disabled auto-reply policy, matching the Shadow collaboration rules.
 
 ## v1.3.3-beta.7 (2026-05-31)

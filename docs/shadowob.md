@@ -46,34 +46,30 @@ Server and channel routing is read from the Buddy policy via `/api/agents/:id/co
 
 ## Buddy Collaboration Rules
 
-Channel auto-replies are coordinated by Shadow, not by local cc-connect heuristics. Before dispatching a channel message to an agent, ShadowOB calls:
+Channel auto-replies use Shadow's normal message primitives: structured mentions,
+threads, and reactions. There is no claim/turn API in the cc-connect adapter.
 
-```http
-POST /api/buddy-collaborations/claim
-```
-
-Only `ok: true` is forwarded to the agent. Rejected claims stay silent.
-
-| Trigger | Local candidate rule | Claim mode | Delivery |
-| --- | --- | --- | --- |
-| Human message with no Buddy mention | Eligible only when the channel policy allows replying to human messages. | `initial` | Shadow usually allows one Buddy and returns `target=main`. |
-| Human message with one Buddy mention | The mentioned Buddy is eligible. The explicit mention can override ordinary disabled auto-reply policy. | `initial` | Shadow allows only the mentioned Buddy and usually returns `target=main`. |
-| Human message with multiple Buddy mentions | Only mentioned Buddies are eligible. | `initial` | Shadow can allow each mentioned Buddy once and returns a shared thread target. |
-| Buddy message with `metadata.collaboration` | Eligible unless `replyToBuddy=false`; `buddyWhitelist`/`buddyBlacklist` can still restrict the sender. | `conversation` | Shadow enforces `maxBuddyTurns`, stopped/expired state, and the shared thread. |
-| Buddy message without `metadata.collaboration` | Not eligible. | none | Silent. |
+| Trigger | Local candidate rule | Delivery |
+| --- | --- | --- |
+| Human message with no Buddy mention | Eligible only when the channel policy allows replying to human messages. | Main channel. |
+| Human message with one Buddy mention | The mentioned Buddy is eligible. The explicit mention can override ordinary disabled auto-reply policy. | Main channel unless the message is already in a thread. |
+| Human message with multiple Buddy mentions | Only mentioned Buddies are eligible. Each mentioned Buddy ensures the root Thread, adds 👌 to the root, then reads reactions. | First mentioned Buddy that reacted with 👌 replies in the Thread; others stay silent. |
+| Buddy message in ordinary main channel | Skipped by default. It can be enabled with `replyToBuddy=true`, still subject to `buddyWhitelist`/`buddyBlacklist`. | Main channel when explicitly enabled. |
+| Buddy message in a Thread | Not limited by `replyToBuddy`; must explicitly mention this Buddy unless it is an Inbox task thread. | Same Thread. |
+| Inbox task or Inbox task thread | Uses the task card/thread binding, independent of `replyToBuddy`. | Task Thread. |
 
 Supported Shadow policy config keys:
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `replyToBuddy` | `true` | Allows Buddy-to-Buddy continuation only when the triggering Buddy message carries collaboration metadata. Set `false` to disable collaborative chat. |
-| `maxBuddyTurns` | `4` | Sent to the claim API as the maximum turns for the root collaboration. |
+| `replyToBuddy` | `false` in ordinary channels, `true` in Buddy Inbox | Limits only Buddy-authored messages in the ordinary main channel. It does not block Thread or Inbox task replies. |
 | `buddyWhitelist` | empty | Optional list of sender Buddy IDs/usernames that can trigger conversation turns. |
 | `buddyBlacklist` | empty | Optional list of sender Buddy IDs/usernames that cannot trigger conversation turns. |
 
-When a claim succeeds, cc-connect injects a short collaboration prompt through `ExtraContent`. Replies, buttons, forms, and attachments include `metadata.collaboration` and use the `threadId`/`replyToId` returned by Shadow. This keeps no-mention, single-mention, multi-mention, and Buddy-triggered turns on the same server-side collaboration record.
-
-The local implementation is split so `platform/shadowob/collaboration.go` owns claim construction, collaboration metadata decoding, prompt injection text, and Buddy allow/deny policy helpers. `shadowob.go` only routes messages into that module and carries the returned delivery context into replies.
+For multi-Buddy mentions, cc-connect injects a short Thread coordination prompt
+through `ExtraContent` only for the first reactor. Replies, buttons, forms, and
+attachments use the resolved `threadId`/`replyToId` directly and do not carry
+internal collaboration metadata.
 
 ## Media
 

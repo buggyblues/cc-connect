@@ -210,14 +210,6 @@ func (c *shadowClient) getMessage(ctx context.Context, messageID string) (*shado
 	return &out, nil
 }
 
-func (c *shadowClient) claimBuddyReply(ctx context.Context, input claimBuddyReplyInput) (*claimBuddyReplyResult, error) {
-	var out claimBuddyReplyResult
-	if err := c.requestJSON(ctx, http.MethodPost, "/api/buddy-collaborations/claim", input, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 func (c *shadowClient) claimTaskCard(ctx context.Context, messageID, cardID, note string) (*shadowMessage, error) {
 	body := map[string]any{}
 	if strings.TrimSpace(note) != "" {
@@ -252,6 +244,31 @@ func (c *shadowClient) updateTaskCard(ctx context.Context, messageID, cardID, st
 		return nil, err
 	}
 	return &out, nil
+}
+
+func (c *shadowClient) ensureThread(ctx context.Context, parentMessageID, name string) (*shadowThread, error) {
+	body := map[string]any{}
+	if strings.TrimSpace(name) != "" {
+		body["name"] = name
+	}
+	var out shadowThread
+	if err := c.requestJSON(ctx, http.MethodPost, "/api/messages/"+url.PathEscape(parentMessageID)+"/thread", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *shadowClient) addReaction(ctx context.Context, messageID, emoji string) error {
+	var out map[string]any
+	return c.requestJSON(ctx, http.MethodPost, "/api/messages/"+url.PathEscape(messageID)+"/reactions", map[string]any{"emoji": emoji}, &out)
+}
+
+func (c *shadowClient) getReactions(ctx context.Context, messageID string) ([]shadowReactionGroup, error) {
+	var out []shadowReactionGroup
+	if err := c.requestJSON(ctx, http.MethodGet, "/api/messages/"+url.PathEscape(messageID)+"/reactions", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 type sendMessageOptions struct {
