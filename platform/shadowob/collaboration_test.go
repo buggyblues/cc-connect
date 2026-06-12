@@ -43,19 +43,22 @@ func TestSenderBuddyAllowedAppliesBlacklistBeforeWhitelist(t *testing.T) {
 
 func TestFormatBuddyThreadCoordinationPromptIncludesRuntimeRules(t *testing.T) {
 	prompt := formatBuddyThreadCoordinationPrompt(&buddyThreadCoordination{
-		rootMessageID: "root-1",
-		threadID:      "thread-1",
-		buddyUserIDs:  []string{"bot-1", "bot-2"},
-		reactionEmoji: "👌",
+		rootMessageID:     "root-1",
+		threadID:          "thread-1",
+		buddyUserIDs:      []string{"bot-1", "bot-2"},
+		otherBuddyUserIDs: []string{"bot-2"},
+		reactionEmoji:     "👌",
 	})
 
 	for _, want := range []string{
 		"Shadow multi-Buddy Thread context:",
 		"already created the Thread",
 		"added the 👌 coordination reaction",
-		"selected this Buddy as the only first speaker",
+		"selected this Buddy as the first speaker",
 		"Do not run shell commands, Shadow CLI/API calls, browser actions",
 		"cc-connect will route your response into the Thread",
+		"Other mentioned Buddies will not answer the root message directly",
+		"<@bot-2>",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

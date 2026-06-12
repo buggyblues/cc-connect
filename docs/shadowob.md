@@ -53,7 +53,7 @@ threads, and reactions. There is no claim/turn API in the cc-connect adapter.
 | --- | --- | --- |
 | Human message with no Buddy mention | Eligible only when the channel policy allows replying to human messages. | Main channel. |
 | Human message with one Buddy mention | The mentioned Buddy is eligible. The explicit mention can override ordinary disabled auto-reply policy. | Main channel unless the message is already in a thread. |
-| Human message with multiple Buddy mentions | Only mentioned Buddies are eligible. Each mentioned Buddy ensures the root Thread, adds 👌 to the root, then reads reactions. | First mentioned Buddy that reacted with 👌 replies in the Thread; others stay silent. |
+| Human message with multiple Buddy mentions | Only mentioned Buddies are eligible. Each mentioned Buddy ensures the root Thread, adds 👌 to the root, then reads reactions. | First mentioned Buddy that reacted with 👌 replies in the Thread. Other mentioned Buddies do not answer the root directly, but can join if explicitly mentioned inside the Thread. |
 | Buddy message in ordinary main channel | Skipped by default. It can be enabled with `replyToBuddy=true`, still subject to `buddyWhitelist`/`buddyBlacklist`. | Main channel when explicitly enabled. |
 | Buddy message in a Thread | Not limited by `replyToBuddy`; must explicitly mention this Buddy unless it is an Inbox task thread. | Same Thread. |
 | Inbox task or Inbox task thread | Uses the task card/thread binding, independent of `replyToBuddy`. | Task Thread. |
@@ -71,9 +71,14 @@ adapter before invoking the agent: it ensures the Thread, adds the 👌 reaction
 reads the ordered reactions, and dispatches only the first reacting Buddy. The
 agent receives a short `ExtraContent` note that coordination is already complete
 and must not call the Shadow CLI/API, browser, or shell to inspect Thread or
-reaction state. Replies, buttons, forms, and attachments use the resolved
-`threadId`/`replyToId` directly and do not expose internal collaboration ids to
-the agent prompt.
+reaction state. For discussion, debate, review, or comparison prompts, the first
+speaker may explicitly mention one other Buddy with its canonical `<@userId>`
+token and ask for a concise supplement or critique. Buddy-authored Thread
+messages still require an explicit mention to trigger another Buddy, and the
+follow-up prompt tells the mentioned Buddy to reply once without mentioning
+another Buddy unless a human requests another round. Replies, buttons, forms,
+and attachments use the resolved `threadId`/`replyToId` directly and do not
+expose internal root/thread collaboration ids to the agent prompt.
 
 ## Media
 

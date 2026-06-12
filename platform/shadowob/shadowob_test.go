@@ -688,6 +688,11 @@ func TestBuddyThreadMessageWithExplicitMentionBypassesReplyToBuddyFalse(t *testi
 	if got == nil {
 		t.Fatal("expected mentioned thread dispatch")
 	}
+	if !strings.Contains(got.ExtraContent, "Shadow Buddy Thread follow-up context") ||
+		!strings.Contains(got.ExtraContent, "Reply once with a concise supplement") ||
+		!strings.Contains(got.ExtraContent, "Do not mention another Buddy") {
+		t.Fatalf("missing Buddy thread follow-up prompt: %q", got.ExtraContent)
+	}
 	rc, ok := got.ReplyCtx.(replyContext)
 	if !ok {
 		t.Fatalf("reply context type = %T", got.ReplyCtx)

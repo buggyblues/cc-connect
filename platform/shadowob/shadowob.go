@@ -873,7 +873,8 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 	} else if taskBinding != nil {
 		sm.Content = formatTaskThreadPrompt(sm.Content, *taskBinding)
 	}
-	msg := p.toCoreMessage(ctx, sm, false, rt, coordination, taskBinding)
+	threadBuddyFollowup := isAuthorBuddy && sm.ThreadID != "" && mentionsMe && !hasTaskContext
+	msg := p.toCoreMessage(ctx, sm, false, rt, coordination, taskBinding, threadBuddyFollowup)
 	if msg == nil {
 		return
 	}
@@ -894,7 +895,7 @@ func (p *Platform) handleDMMessage(ctx context.Context, sm shadowMessage) {
 	if p.handleLocalSlashPrompt(ctx, sm, true) {
 		return
 	}
-	msg := p.toCoreMessage(ctx, sm, true, channelRuntime{}, nil, nil)
+	msg := p.toCoreMessage(ctx, sm, true, channelRuntime{}, nil, nil, false)
 	if msg == nil {
 		return
 	}
@@ -931,7 +932,7 @@ func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage,
 	return true
 }
 
-func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool, rt channelRuntime, coordination *buddyThreadCoordination, taskBinding *taskThreadBinding) *core.Message {
+func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool, rt channelRuntime, coordination *buddyThreadCoordination, taskBinding *taskThreadBinding, threadBuddyFollowup bool) *core.Message {
 	body := sm.Content
 	if ir := interactiveResponse(sm.Metadata); ir != nil {
 		body = p.interactiveResponseContent(ctx, sm, ir)
@@ -982,9 +983,20 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 		Files:        files,
 		Audio:        audio,
 		ChannelKey:   channelKey,
-		ExtraContent: formatBuddyThreadCoordinationPrompt(coordination),
+		ExtraContent: formatShadowExtraPrompt(coordination, threadBuddyFollowup),
 		ReplyCtx:     p.replyContextForMessage(sm, dm, taskBinding),
 	}
+}
+
+func formatShadowExtraPrompt(coordination *buddyThreadCoordination, threadBuddyFollowup bool) string {
+	parts := []string{}
+	if prompt := formatBuddyThreadCoordinationPrompt(coordination); prompt != "" {
+		parts = append(parts, prompt)
+	}
+	if threadBuddyFollowup {
+		parts = append(parts, formatBuddyThreadFollowupPrompt())
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, taskBinding *taskThreadBinding) replyContext {

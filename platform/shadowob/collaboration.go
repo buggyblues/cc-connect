@@ -9,10 +9,11 @@ import (
 const buddyThreadCoordinationReaction = "👌"
 
 type buddyThreadCoordination struct {
-	rootMessageID string
-	threadID      string
-	buddyUserIDs  []string
-	reactionEmoji string
+	rootMessageID     string
+	threadID          string
+	buddyUserIDs      []string
+	otherBuddyUserIDs []string
+	reactionEmoji     string
 }
 
 type shadowThread struct {
@@ -73,10 +74,11 @@ func (p *Platform) coordinateBuddyThread(ctx context.Context, sm shadowMessage) 
 		return nil, false
 	}
 	return &buddyThreadCoordination{
-		rootMessageID: sm.ID,
-		threadID:      thread.ID,
-		buddyUserIDs:  buddyUserIDs,
-		reactionEmoji: buddyThreadCoordinationReaction,
+		rootMessageID:     sm.ID,
+		threadID:          thread.ID,
+		buddyUserIDs:      buddyUserIDs,
+		otherBuddyUserIDs: otherBuddyUserIDs(buddyUserIDs, meID),
+		reactionEmoji:     buddyThreadCoordinationReaction,
 	}, true
 }
 
@@ -128,14 +130,51 @@ func formatBuddyThreadCoordinationPrompt(coordination *buddyThreadCoordination) 
 	}
 	lines := []string{
 		"Shadow multi-Buddy Thread context:",
-		"- The Shadow adapter has already created the Thread, added the " + coordination.reactionEmoji + " coordination reaction, read the reaction order, and selected this Buddy as the only first speaker.",
+		"- The Shadow adapter has already created the Thread, added the " + coordination.reactionEmoji + " coordination reaction, read the reaction order, and selected this Buddy as the first speaker for the root message.",
 		"- Do not run shell commands, Shadow CLI/API calls, browser actions, or any other tool to inspect the Thread or reactions.",
 		"- Do not add, remove, or check coordination reactions again.",
 		"- Reply normally now; cc-connect will route your response into the Thread as a reply to the root message.",
-		"- Other mentioned Buddies will stay silent after their reaction.",
+		"- Other mentioned Buddies will not answer the root message directly; they can answer later only if explicitly mentioned in this Thread.",
+		"- If the user asked for discussion, debate, review, or comparison, invite exactly one other mentioned Buddy to add one concise supplement or critique by using its canonical mention token.",
+		"- Ask that Buddy not to mention another Buddy unless a human explicitly requests another round.",
+		"- If the user's request only needs a single answer, do not invite a follow-up.",
 		"- Do not send acknowledgement-only text such as \"I agree\" or \"no extra input\".",
 	}
+	if len(coordination.otherBuddyUserIDs) > 0 {
+		lines = append(lines, "- Other Buddy mention tokens available for a follow-up: "+strings.Join(canonicalBuddyMentionTokens(coordination.otherBuddyUserIDs), ", "))
+	}
 	return strings.Join(lines, "\n")
+}
+
+func formatBuddyThreadFollowupPrompt() string {
+	return strings.Join([]string{
+		"Shadow Buddy Thread follow-up context:",
+		"- Another Buddy explicitly mentioned you inside this Thread.",
+		"- Reply once with a concise supplement, correction, or disagreement.",
+		"- Do not mention another Buddy unless a human explicitly asks for another round.",
+	}, "\n")
+}
+
+func otherBuddyUserIDs(buddyUserIDs []string, meID string) []string {
+	out := []string{}
+	for _, userID := range buddyUserIDs {
+		if userID == "" || userID == meID {
+			continue
+		}
+		out = append(out, userID)
+	}
+	return out
+}
+
+func canonicalBuddyMentionTokens(userIDs []string) []string {
+	tokens := make([]string, 0, len(userIDs))
+	for _, userID := range userIDs {
+		if strings.TrimSpace(userID) == "" {
+			continue
+		}
+		tokens = append(tokens, "<@"+userID+">")
+	}
+	return tokens
 }
 
 func firstReactionBuddyUserID(groups []shadowReactionGroup, emoji string, buddyUserIDs []string) string {
