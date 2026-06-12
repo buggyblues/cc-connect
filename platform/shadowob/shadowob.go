@@ -1825,7 +1825,14 @@ func mergeBuddyDiscussionMetadata(metadata map[string]any, discussion *buddyThre
 	for k, v := range metadata {
 		out[k] = v
 	}
-	out[buddyDiscussionMetadataKey] = discussionMetadata
+	custom := map[string]any{}
+	if existing, ok := out["custom"].(map[string]any); ok {
+		for k, v := range existing {
+			custom[k] = v
+		}
+	}
+	custom[buddyDiscussionMetadataKey] = discussionMetadata
+	out["custom"] = custom
 	return out
 }
 

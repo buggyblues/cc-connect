@@ -739,7 +739,15 @@ func TestBuddyThreadMessageWithExplicitMentionBypassesReplyToBuddyFalse(t *testi
 	if err := p.Reply(context.Background(), got.ReplyCtx, "follow-up"); err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	rawDiscussion, ok := sendBody["metadata"].(map[string]any)[buddyDiscussionMetadataKey].(map[string]any)
+	metadata, ok := sendBody["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("send metadata missing: %#v", sendBody)
+	}
+	custom, ok := metadata["custom"].(map[string]any)
+	if !ok {
+		t.Fatalf("send metadata custom missing Buddy discussion state: %#v", sendBody)
+	}
+	rawDiscussion, ok := custom[buddyDiscussionMetadataKey].(map[string]any)
 	if !ok {
 		t.Fatalf("send metadata missing Buddy discussion state: %#v", sendBody)
 	}

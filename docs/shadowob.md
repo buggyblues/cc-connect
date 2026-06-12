@@ -75,15 +75,16 @@ and must not call the Shadow CLI/API, browser, or shell to inspect Thread or
 reaction state. For discussion, debate, review, or comparison prompts, the first
 speaker may explicitly mention one other Buddy with its canonical `<@userId>`
 token and ask for a concise supplement or critique. cc-connect stores invisible
-discussion metadata on Buddy replies (`shadowBuddyDiscussion`) so the next
-mentioned Buddy knows the participant set, current turn, and max turn limit
-without needing to inspect Shadow state. Follow-up turns may hand off to one
-other participant when another round would improve the answer; the final planned
-turn must close without mentioning another Buddy unless a human explicitly asks
-for more. Buddy-authored Thread messages still require an explicit mention to
-trigger another Buddy, and transient/non-persisted preview messages are ignored
-before they can enqueue work. Replies, buttons, forms, and attachments use the
-resolved `threadId`/`replyToId` directly and do not expose internal root/thread
+discussion metadata on Buddy replies under
+`metadata.custom.shadowBuddyDiscussion` so the next mentioned Buddy knows the
+participant set, current turn, and max turn limit without needing to inspect
+Shadow state. Follow-up turns may hand off to one other participant when another
+round would improve the answer; the final planned turn must close without
+mentioning another Buddy unless a human explicitly asks for more.
+Buddy-authored Thread messages still require an explicit mention to trigger
+another Buddy, and transient/non-persisted preview messages are ignored before
+they can enqueue work. Replies, buttons, forms, and attachments use the resolved
+`threadId`/`replyToId` directly and do not expose internal root/thread
 collaboration ids to the agent prompt.
 
 ## Media

@@ -245,6 +245,11 @@ func buddyDiscussionStateFromMetadata(metadata map[string]any) *buddyThreadDiscu
 	}
 	raw, ok := metadata[buddyDiscussionMetadataKey].(map[string]any)
 	if !ok {
+		if custom, customOK := metadata["custom"].(map[string]any); customOK {
+			raw, ok = custom[buddyDiscussionMetadataKey].(map[string]any)
+		}
+	}
+	if !ok {
 		return nil
 	}
 	turn, _ := numberInt(raw["turn"])
