@@ -833,6 +833,63 @@ func TestThreadMentionPreviewWithoutBuddyMetadataIsConfirmedBeforeDispatch(t *te
 	})
 }
 
+func TestBuddyThreadDuplicateSourceTurnDispatchesOnce(t *testing.T) {
+	discussion := map[string]any{
+		"rootMessageId": "root-1",
+		"threadId":      "thread-1",
+		"buddyUserIds":  []any{"bot-1", "buddy-2"},
+		"turn":          1,
+		"maxTurns":      4,
+		"speakerUserId": "buddy-2",
+	}
+	messageForID := func(id string) shadowMessage {
+		return shadowMessage{
+			ID:        id,
+			ChannelID: "ch1",
+			ThreadID:  "thread-1",
+			AuthorID:  "buddy-2",
+			Content:   "<@bot-1> duplicated source turn",
+			Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
+			Metadata: map[string]any{
+				"mentions": []any{
+					map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
+				},
+				"custom": map[string]any{buddyDiscussionMetadataKey: discussion},
+			},
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/messages/preview-msg", "/api/messages/final-msg":
+			id := strings.TrimPrefix(r.URL.Path, "/api/messages/")
+			_ = json.NewEncoder(w).Encode(messageForID(id))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.me = shadowUser{ID: "bot-1", Username: "buddy"}
+	p.channels["ch1"] = channelRuntime{
+		ID:     "ch1",
+		Policy: shadowChannelPolicy{Listen: true, Reply: true},
+	}
+	dispatches := 0
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		dispatches++
+		if !strings.Contains(msg.ExtraContent, "Buddy discussion turn 2 of 4") {
+			t.Fatalf("missing follow-up prompt: %q", msg.ExtraContent)
+		}
+	}
+	p.handleChannelMessage(context.Background(), messageForID("preview-msg"))
+	p.handleChannelMessage(context.Background(), messageForID("final-msg"))
+
+	if dispatches != 1 {
+		t.Fatalf("dispatches = %d, want 1", dispatches)
+	}
+}
+
 func TestBuddyThreadFollowupStopsAtDiscussionTurnLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

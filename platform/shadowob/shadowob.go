@@ -24,9 +24,10 @@ func init() {
 }
 
 const (
-	defaultReconnectDelay = time.Second
-	maxReconnectDelay     = 30 * time.Second
-	defaultMediaMaxBytes  = 20 << 20
+	defaultReconnectDelay  = time.Second
+	maxReconnectDelay      = 30 * time.Second
+	defaultMediaMaxBytes   = 20 << 20
+	buddyDiscussionSeenTTL = 10 * time.Minute
 )
 
 var (
@@ -107,6 +108,7 @@ type Platform struct {
 	lastReceivedSweep   time.Time
 	previewMsgs         map[string]string
 	taskThreadBindings  map[string]taskThreadBinding
+	buddyDiscussionSeen map[string]time.Time
 }
 
 func New(opts map[string]any) (core.Platform, error) {
@@ -163,6 +165,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		receivedMsgIDs:        make(map[string]time.Time),
 		previewMsgs:           make(map[string]string),
 		taskThreadBindings:    make(map[string]taskThreadBinding),
+		buddyDiscussionSeen:   make(map[string]time.Time),
 	}, nil
 }
 
@@ -859,6 +862,10 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 				slog.Debug("shadowob: ignoring Buddy thread message without explicit mention", "channel_id", sm.ChannelID, "message_id", sm.ID)
 				return
 			}
+			if p.shouldSkipDuplicateBuddyDiscussionTurn(sm, buddyUserID) {
+				slog.Debug("shadowob: ignoring duplicate Buddy discussion source turn", "channel_id", sm.ChannelID, "thread_id", sm.ThreadID, "message_id", sm.ID)
+				return
+			}
 			var allowed bool
 			threadBuddyDiscussion, allowed = nextBuddyDiscussionState(sm, buddyUserID)
 			if !allowed {
@@ -1149,6 +1156,42 @@ func (p *Platform) confirmPersistedThreadMessage(ctx context.Context, sm shadowM
 		return sm, false
 	}
 	return *persisted, true
+}
+
+func (p *Platform) shouldSkipDuplicateBuddyDiscussionTurn(sm shadowMessage, meID string) bool {
+	state := buddyDiscussionStateFromMetadata(sm.Metadata)
+	if state == nil || state.rootMessageID == "" || state.turn <= 0 || meID == "" {
+		return false
+	}
+	threadID := firstNonEmpty(state.threadID, sm.ThreadID)
+	speakerID := firstNonEmpty(state.speakerUserID, messageAuthorID(sm))
+	if threadID == "" || speakerID == "" {
+		return false
+	}
+	key := strings.Join([]string{
+		state.rootMessageID,
+		threadID,
+		intString(state.turn),
+		speakerID,
+		meID,
+	}, "|")
+
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.buddyDiscussionSeen == nil {
+		p.buddyDiscussionSeen = make(map[string]time.Time)
+	}
+	for seenKey, seenAt := range p.buddyDiscussionSeen {
+		if now.Sub(seenAt) > buddyDiscussionSeenTTL {
+			delete(p.buddyDiscussionSeen, seenKey)
+		}
+	}
+	if _, ok := p.buddyDiscussionSeen[key]; ok {
+		return true
+	}
+	p.buddyDiscussionSeen[key] = now
+	return false
 }
 
 func (p *Platform) allowedSender(sm shadowMessage) bool {
