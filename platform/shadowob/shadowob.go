@@ -44,6 +44,7 @@ type replyContext struct {
 	taskMessageID string
 	taskCardID    string
 	taskComplete  bool
+	discussion    *buddyThreadDiscussionState
 }
 
 type taskThreadBinding struct {
@@ -837,15 +838,34 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 	}
 
 	isAuthorBuddy := sm.Author != nil && sm.Author.IsBot
+	var threadBuddyDiscussion *buddyThreadDiscussionState
 	if isAuthorBuddy && !hasTaskContext {
 		replyToBuddy := policyConfigBool(rt.Policy.Config, "replyToBuddy", false)
 		if !replyToBuddy && sm.ThreadID == "" {
 			slog.Debug("shadowob: ignoring Buddy main-channel message because replyToBuddy=false", "channel_id", sm.ChannelID, "message_id", sm.ID)
 			return
 		}
-		if sm.ThreadID != "" && !mentionsMe {
-			slog.Debug("shadowob: ignoring Buddy thread message without explicit mention", "channel_id", sm.ChannelID, "message_id", sm.ID)
-			return
+		if sm.ThreadID != "" {
+			if !mentionsMe {
+				slog.Debug("shadowob: ignoring Buddy thread message without explicit mention", "channel_id", sm.ChannelID, "message_id", sm.ID)
+				return
+			}
+			confirmed, ok := p.confirmPersistedBuddyThreadMessage(ctx, sm)
+			if !ok {
+				return
+			}
+			sm = confirmed
+			mentionsMe = p.messageMentionsMe(sm)
+			if !mentionsMe {
+				slog.Debug("shadowob: ignoring persisted Buddy thread message without explicit mention", "channel_id", sm.ChannelID, "message_id", sm.ID)
+				return
+			}
+			var allowed bool
+			threadBuddyDiscussion, allowed = nextBuddyDiscussionState(sm, buddyUserID)
+			if !allowed {
+				slog.Debug("shadowob: ignoring Buddy thread follow-up beyond discussion turn limit", "channel_id", sm.ChannelID, "message_id", sm.ID)
+				return
+			}
 		}
 		if !senderBuddyAllowed(rt.Policy.Config, sm) {
 			slog.Debug("shadowob: ignoring Buddy message because buddy allowlist policy denied it", "channel_id", sm.ChannelID, "message_id", sm.ID)
@@ -857,7 +877,7 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 		return
 	}
 
-	coordination, ok := p.coordinateBuddyThread(ctx, sm)
+	coordination, ok := p.coordinateBuddyThread(ctx, sm, rt.Policy.Config)
 	if !ok {
 		return
 	}
@@ -874,7 +894,7 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 		sm.Content = formatTaskThreadPrompt(sm.Content, *taskBinding)
 	}
 	threadBuddyFollowup := isAuthorBuddy && sm.ThreadID != "" && mentionsMe && !hasTaskContext
-	msg := p.toCoreMessage(ctx, sm, false, rt, coordination, taskBinding, threadBuddyFollowup)
+	msg := p.toCoreMessage(ctx, sm, false, rt, coordination, taskBinding, threadBuddyFollowup, threadBuddyDiscussion)
 	if msg == nil {
 		return
 	}
@@ -895,7 +915,7 @@ func (p *Platform) handleDMMessage(ctx context.Context, sm shadowMessage) {
 	if p.handleLocalSlashPrompt(ctx, sm, true) {
 		return
 	}
-	msg := p.toCoreMessage(ctx, sm, true, channelRuntime{}, nil, nil, false)
+	msg := p.toCoreMessage(ctx, sm, true, channelRuntime{}, nil, nil, false, nil)
 	if msg == nil {
 		return
 	}
@@ -932,7 +952,7 @@ func (p *Platform) handleLocalSlashPrompt(ctx context.Context, sm shadowMessage,
 	return true
 }
 
-func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool, rt channelRuntime, coordination *buddyThreadCoordination, taskBinding *taskThreadBinding, threadBuddyFollowup bool) *core.Message {
+func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool, rt channelRuntime, coordination *buddyThreadCoordination, taskBinding *taskThreadBinding, threadBuddyFollowup bool, threadBuddyDiscussion *buddyThreadDiscussionState) *core.Message {
 	body := sm.Content
 	if ir := interactiveResponse(sm.Metadata); ir != nil {
 		body = p.interactiveResponseContent(ctx, sm, ir)
@@ -971,6 +991,8 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 	} else if rt.Name != "" {
 		chatName = "#" + rt.Name
 	}
+	rc := p.replyContextForMessage(sm, dm, taskBinding)
+	rc.discussion = outboundBuddyDiscussionState(coordination, threadBuddyDiscussion)
 	return &core.Message{
 		SessionKey:   sessionKey,
 		Platform:     "shadowob",
@@ -983,20 +1005,30 @@ func (p *Platform) toCoreMessage(ctx context.Context, sm shadowMessage, dm bool,
 		Files:        files,
 		Audio:        audio,
 		ChannelKey:   channelKey,
-		ExtraContent: formatShadowExtraPrompt(coordination, threadBuddyFollowup),
-		ReplyCtx:     p.replyContextForMessage(sm, dm, taskBinding),
+		ExtraContent: formatShadowExtraPrompt(coordination, threadBuddyFollowup, threadBuddyDiscussion, p.me.ID),
+		ReplyCtx:     rc,
 	}
 }
 
-func formatShadowExtraPrompt(coordination *buddyThreadCoordination, threadBuddyFollowup bool) string {
+func formatShadowExtraPrompt(coordination *buddyThreadCoordination, threadBuddyFollowup bool, threadBuddyDiscussion *buddyThreadDiscussionState, meID string) string {
 	parts := []string{}
 	if prompt := formatBuddyThreadCoordinationPrompt(coordination); prompt != "" {
 		parts = append(parts, prompt)
 	}
 	if threadBuddyFollowup {
-		parts = append(parts, formatBuddyThreadFollowupPrompt())
+		parts = append(parts, formatBuddyThreadFollowupPrompt(threadBuddyDiscussion, meID))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func outboundBuddyDiscussionState(coordination *buddyThreadCoordination, followup *buddyThreadDiscussionState) *buddyThreadDiscussionState {
+	if followup != nil {
+		return followup
+	}
+	if coordination != nil {
+		return coordination.discussion
+	}
+	return nil
 }
 
 func (p *Platform) replyContextForMessage(sm shadowMessage, dm bool, taskBinding *taskThreadBinding) replyContext {
@@ -1094,6 +1126,24 @@ func (p *Platform) shouldSkipMessage(sm shadowMessage) bool {
 		p.mu.Unlock()
 	}
 	return false
+}
+
+func (p *Platform) confirmPersistedBuddyThreadMessage(ctx context.Context, sm shadowMessage) (shadowMessage, bool) {
+	if p.client == nil || sm.ID == "" {
+		return sm, true
+	}
+	reqCtx, cancel := requestContext(ctx)
+	persisted, err := p.client.getMessage(reqCtx, sm.ID)
+	cancel()
+	if err != nil {
+		slog.Debug("shadowob: ignoring transient Buddy thread message that is not readable via REST", "channel_id", sm.ChannelID, "thread_id", sm.ThreadID, "message_id", sm.ID, "error", err)
+		return sm, false
+	}
+	if persisted == nil || persisted.ID == "" {
+		slog.Debug("shadowob: ignoring transient Buddy thread message with empty REST payload", "channel_id", sm.ChannelID, "thread_id", sm.ThreadID, "message_id", sm.ID)
+		return sm, false
+	}
+	return *persisted, true
 }
 
 func (p *Platform) allowedSender(sm shadowMessage) bool {
@@ -1724,6 +1774,7 @@ func (p *Platform) sendToReplyContext(ctx context.Context, rc replyContext, cont
 	if strings.TrimSpace(content) == "" {
 		content = "\u200B"
 	}
+	metadata = mergeBuddyDiscussionMetadata(metadata, rc.discussion, p.me.ID)
 	if metadata == nil {
 		metadata = p.deliveryMetadata(nil)
 	} else if deliveryID(metadata) == "" {
@@ -1763,6 +1814,19 @@ func (p *Platform) sendToReplyContext(ctx context.Context, rc replyContext, cont
 	}
 	p.recordSentMessageID(msg)
 	return msg, nil
+}
+
+func mergeBuddyDiscussionMetadata(metadata map[string]any, discussion *buddyThreadDiscussionState, speakerUserID string) map[string]any {
+	discussionMetadata := buddyDiscussionMetadata(discussion, speakerUserID)
+	if len(discussionMetadata) == 0 {
+		return metadata
+	}
+	out := map[string]any{}
+	for k, v := range metadata {
+		out[k] = v
+	}
+	out[buddyDiscussionMetadataKey] = discussionMetadata
+	return out
 }
 
 func (p *Platform) recordSentMessageID(msg *shadowMessage) {

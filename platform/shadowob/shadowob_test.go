@@ -657,7 +657,43 @@ func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
 }
 
 func TestBuddyThreadMessageWithExplicitMentionBypassesReplyToBuddyFalse(t *testing.T) {
-	p := newShadowOBTestPlatform(t, "https://shadow.example.com")
+	var sendBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/messages/buddy-msg-1":
+			_ = json.NewEncoder(w).Encode(shadowMessage{
+				ID:        "buddy-msg-1",
+				ChannelID: "ch1",
+				ThreadID:  "thread-1",
+				AuthorID:  "buddy-2",
+				Content:   "<@bot-1> One more point.",
+				Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
+				Metadata: map[string]any{
+					"mentions": []any{
+						map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
+					},
+					buddyDiscussionMetadataKey: map[string]any{
+						"rootMessageId": "root-1",
+						"threadId":      "thread-1",
+						"buddyUserIds":  []any{"bot-1", "buddy-2"},
+						"turn":          1,
+						"maxTurns":      4,
+						"speakerUserId": "buddy-2",
+					},
+				},
+			})
+		case "/api/channels/ch1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&sendBody); err != nil {
+				t.Fatalf("decode send: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(shadowMessage{ID: "reply-1", ChannelID: "ch1", ThreadID: "thread-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
 	p.me = shadowUser{ID: "bot-1", Username: "buddy"}
 	p.channels["ch1"] = channelRuntime{
 		ID: "ch1",
@@ -689,8 +725,8 @@ func TestBuddyThreadMessageWithExplicitMentionBypassesReplyToBuddyFalse(t *testi
 		t.Fatal("expected mentioned thread dispatch")
 	}
 	if !strings.Contains(got.ExtraContent, "Shadow Buddy Thread follow-up context") ||
-		!strings.Contains(got.ExtraContent, "Reply once with a concise supplement") ||
-		!strings.Contains(got.ExtraContent, "Do not mention another Buddy") {
+		!strings.Contains(got.ExtraContent, "Buddy discussion turn 2 of 4") ||
+		!strings.Contains(got.ExtraContent, "<@buddy-2>") {
 		t.Fatalf("missing Buddy thread follow-up prompt: %q", got.ExtraContent)
 	}
 	rc, ok := got.ReplyCtx.(replyContext)
@@ -700,6 +736,103 @@ func TestBuddyThreadMessageWithExplicitMentionBypassesReplyToBuddyFalse(t *testi
 	if rc.replyToID != "buddy-msg-1" || rc.threadID != "thread-1" {
 		t.Fatalf("reply context = %#v", rc)
 	}
+	if err := p.Reply(context.Background(), got.ReplyCtx, "follow-up"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	rawDiscussion, ok := sendBody["metadata"].(map[string]any)[buddyDiscussionMetadataKey].(map[string]any)
+	if !ok {
+		t.Fatalf("send metadata missing Buddy discussion state: %#v", sendBody)
+	}
+	if rawDiscussion["turn"] != float64(2) && rawDiscussion["turn"] != 2 {
+		t.Fatalf("discussion turn metadata = %#v", rawDiscussion)
+	}
+	if rawDiscussion["speakerUserId"] != "bot-1" {
+		t.Fatalf("discussion speaker metadata = %#v", rawDiscussion)
+	}
+}
+
+func TestBuddyThreadTransientMentionIsIgnoredWhenMessageIsNotPersisted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.me = shadowUser{ID: "bot-1", Username: "buddy"}
+	p.channels["ch1"] = channelRuntime{
+		ID:     "ch1",
+		Policy: shadowChannelPolicy{Listen: true, Reply: true},
+	}
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		t.Fatalf("transient Buddy thread message should not dispatch: %#v", msg)
+	}
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "preview-msg-1",
+		ChannelID: "ch1",
+		ThreadID:  "thread-1",
+		AuthorID:  "buddy-2",
+		Content:   "<@bot-1> temporary preview",
+		Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
+		Metadata: map[string]any{
+			"mentions": []any{
+				map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
+			},
+		},
+	})
+}
+
+func TestBuddyThreadFollowupStopsAtDiscussionTurnLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/messages/buddy-msg-1":
+			_ = json.NewEncoder(w).Encode(shadowMessage{
+				ID:        "buddy-msg-1",
+				ChannelID: "ch1",
+				ThreadID:  "thread-1",
+				AuthorID:  "buddy-2",
+				Content:   "<@bot-1> final?",
+				Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
+				Metadata: map[string]any{
+					"mentions": []any{
+						map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
+					},
+					buddyDiscussionMetadataKey: map[string]any{
+						"rootMessageId": "root-1",
+						"threadId":      "thread-1",
+						"buddyUserIds":  []any{"bot-1", "buddy-2"},
+						"turn":          4,
+						"maxTurns":      4,
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.me = shadowUser{ID: "bot-1", Username: "buddy"}
+	p.channels["ch1"] = channelRuntime{
+		ID:     "ch1",
+		Policy: shadowChannelPolicy{Listen: true, Reply: true},
+	}
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		t.Fatalf("Buddy thread message beyond turn limit should not dispatch: %#v", msg)
+	}
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "buddy-msg-1",
+		ChannelID: "ch1",
+		ThreadID:  "thread-1",
+		AuthorID:  "buddy-2",
+		Content:   "<@bot-1> final?",
+		Author:    &shadowAuthor{ID: "buddy-2", Username: "other-buddy", IsBot: true},
+		Metadata: map[string]any{
+			"mentions": []any{
+				map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
+			},
+		},
+	})
 }
 
 func TestShadowClientSendMessageWithToken(t *testing.T) {

@@ -63,6 +63,7 @@ Supported Shadow policy config keys:
 | Key | Default | Notes |
 | --- | --- | --- |
 | `replyToBuddy` | `false` in ordinary channels, `true` in Buddy Inbox | Limits only Buddy-authored messages in the ordinary main channel. It does not block Thread or Inbox task replies. |
+| `buddyThreadMaxTurns` | `4` | Max Buddy-authored turns in one auto-created multi-Buddy discussion Thread. Values below 2 become 2; values above 8 become 8. |
 | `buddyWhitelist` | empty | Optional list of sender Buddy IDs/usernames that can trigger conversation turns. |
 | `buddyBlacklist` | empty | Optional list of sender Buddy IDs/usernames that cannot trigger conversation turns. |
 
@@ -73,12 +74,17 @@ agent receives a short `ExtraContent` note that coordination is already complete
 and must not call the Shadow CLI/API, browser, or shell to inspect Thread or
 reaction state. For discussion, debate, review, or comparison prompts, the first
 speaker may explicitly mention one other Buddy with its canonical `<@userId>`
-token and ask for a concise supplement or critique. Buddy-authored Thread
-messages still require an explicit mention to trigger another Buddy, and the
-follow-up prompt tells the mentioned Buddy to reply once without mentioning
-another Buddy unless a human requests another round. Replies, buttons, forms,
-and attachments use the resolved `threadId`/`replyToId` directly and do not
-expose internal root/thread collaboration ids to the agent prompt.
+token and ask for a concise supplement or critique. cc-connect stores invisible
+discussion metadata on Buddy replies (`shadowBuddyDiscussion`) so the next
+mentioned Buddy knows the participant set, current turn, and max turn limit
+without needing to inspect Shadow state. Follow-up turns may hand off to one
+other participant when another round would improve the answer; the final planned
+turn must close without mentioning another Buddy unless a human explicitly asks
+for more. Buddy-authored Thread messages still require an explicit mention to
+trigger another Buddy, and transient/non-persisted preview messages are ignored
+before they can enqueue work. Replies, buttons, forms, and attachments use the
+resolved `threadId`/`replyToId` directly and do not expose internal root/thread
+collaboration ids to the agent prompt.
 
 ## Media
 

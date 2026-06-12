@@ -2,11 +2,17 @@ package shadowob
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 )
 
-const buddyThreadCoordinationReaction = "👌"
+const (
+	buddyThreadCoordinationReaction = "👌"
+	buddyDiscussionMetadataKey      = "shadowBuddyDiscussion"
+	defaultBuddyDiscussionMaxTurns  = 4
+	maxBuddyDiscussionMaxTurns      = 8
+)
 
 type buddyThreadCoordination struct {
 	rootMessageID     string
@@ -14,6 +20,16 @@ type buddyThreadCoordination struct {
 	buddyUserIDs      []string
 	otherBuddyUserIDs []string
 	reactionEmoji     string
+	discussion        *buddyThreadDiscussionState
+}
+
+type buddyThreadDiscussionState struct {
+	rootMessageID string
+	threadID      string
+	buddyUserIDs  []string
+	turn          int
+	maxTurns      int
+	speakerUserID string
 }
 
 type shadowThread struct {
@@ -28,7 +44,7 @@ type shadowReactionGroup struct {
 	UserIDs []string `json:"userIds"`
 }
 
-func (p *Platform) coordinateBuddyThread(ctx context.Context, sm shadowMessage) (*buddyThreadCoordination, bool) {
+func (p *Platform) coordinateBuddyThread(ctx context.Context, sm shadowMessage, config map[string]any) (*buddyThreadCoordination, bool) {
 	if sm.ThreadID != "" || sm.ID == "" || p.client == nil {
 		return nil, true
 	}
@@ -79,6 +95,14 @@ func (p *Platform) coordinateBuddyThread(ctx context.Context, sm shadowMessage) 
 		buddyUserIDs:      buddyUserIDs,
 		otherBuddyUserIDs: otherBuddyUserIDs(buddyUserIDs, meID),
 		reactionEmoji:     buddyThreadCoordinationReaction,
+		discussion: &buddyThreadDiscussionState{
+			rootMessageID: sm.ID,
+			threadID:      thread.ID,
+			buddyUserIDs:  buddyUserIDs,
+			turn:          1,
+			maxTurns:      buddyDiscussionMaxTurns(config),
+			speakerUserID: meID,
+		},
 	}, true
 }
 
@@ -128,6 +152,12 @@ func formatBuddyThreadCoordinationPrompt(coordination *buddyThreadCoordination) 
 	if coordination == nil {
 		return ""
 	}
+	turn := 1
+	maxTurns := defaultBuddyDiscussionMaxTurns
+	if coordination.discussion != nil {
+		turn = coordination.discussion.turn
+		maxTurns = coordination.discussion.maxTurns
+	}
 	lines := []string{
 		"Shadow multi-Buddy Thread context:",
 		"- The Shadow adapter has already created the Thread, added the " + coordination.reactionEmoji + " coordination reaction, read the reaction order, and selected this Buddy as the first speaker for the root message.",
@@ -135,8 +165,10 @@ func formatBuddyThreadCoordinationPrompt(coordination *buddyThreadCoordination) 
 		"- Do not add, remove, or check coordination reactions again.",
 		"- Reply normally now; cc-connect will route your response into the Thread as a reply to the root message.",
 		"- Other mentioned Buddies will not answer the root message directly; they can answer later only if explicitly mentioned in this Thread.",
-		"- If the user asked for discussion, debate, review, or comparison, invite exactly one other mentioned Buddy to add one concise supplement or critique by using its canonical mention token.",
-		"- Ask that Buddy not to mention another Buddy unless a human explicitly requests another round.",
+		"- This is Buddy discussion turn " + intString(turn) + " of " + intString(maxTurns) + ".",
+		"- If the user asked for discussion, debate, review, or comparison, invite exactly one other mentioned Buddy to take the next turn by using its canonical mention token.",
+		"- Mention at most one Buddy when handing off the next turn, and keep the answer substantive before the mention.",
+		"- Close without a Buddy mention when the answer is settled or the planned turn limit has been reached.",
 		"- If the user's request only needs a single answer, do not invite a follow-up.",
 		"- Do not send acknowledgement-only text such as \"I agree\" or \"no extra input\".",
 	}
@@ -146,13 +178,130 @@ func formatBuddyThreadCoordinationPrompt(coordination *buddyThreadCoordination) 
 	return strings.Join(lines, "\n")
 }
 
-func formatBuddyThreadFollowupPrompt() string {
-	return strings.Join([]string{
+func formatBuddyThreadFollowupPrompt(state *buddyThreadDiscussionState, meID string) string {
+	lines := []string{
 		"Shadow Buddy Thread follow-up context:",
 		"- Another Buddy explicitly mentioned you inside this Thread.",
-		"- Reply once with a concise supplement, correction, or disagreement.",
-		"- Do not mention another Buddy unless a human explicitly asks for another round.",
-	}, "\n")
+		"- Reply with a substantive supplement, correction, or disagreement.",
+		"- Do not send acknowledgement-only text such as \"I agree\" or \"no extra input\".",
+	}
+	if state == nil {
+		lines = append(lines,
+			"- This message has no active Buddy discussion metadata, so treat it as a single follow-up turn.",
+			"- Do not mention another Buddy unless a human explicitly asks for another round.",
+		)
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines, "- This is Buddy discussion turn "+intString(state.turn)+" of "+intString(state.maxTurns)+".")
+	nextTokens := canonicalBuddyMentionTokens(otherBuddyUserIDs(state.buddyUserIDs, meID))
+	if state.turn < state.maxTurns && len(nextTokens) > 0 {
+		lines = append(lines,
+			"- If another round would improve the answer, invite exactly one participant for the next turn by using its canonical mention token.",
+			"- Available next-turn mention tokens: "+strings.Join(nextTokens, ", "),
+		)
+	} else {
+		lines = append(lines, "- This is the final planned Buddy turn; close the discussion without mentioning another Buddy unless a human explicitly asks.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buddyDiscussionMaxTurns(config map[string]any) int {
+	maxTurns := policyConfigInt(config, "buddyThreadMaxTurns", defaultBuddyDiscussionMaxTurns)
+	if maxTurns < 2 {
+		return 2
+	}
+	if maxTurns > maxBuddyDiscussionMaxTurns {
+		return maxBuddyDiscussionMaxTurns
+	}
+	return maxTurns
+}
+
+func nextBuddyDiscussionState(sm shadowMessage, meID string) (*buddyThreadDiscussionState, bool) {
+	state := buddyDiscussionStateFromMetadata(sm.Metadata)
+	if state == nil {
+		return nil, true
+	}
+	if state.maxTurns < 2 {
+		state.maxTurns = defaultBuddyDiscussionMaxTurns
+	}
+	if state.maxTurns > maxBuddyDiscussionMaxTurns {
+		state.maxTurns = maxBuddyDiscussionMaxTurns
+	}
+	if state.turn >= state.maxTurns {
+		return nil, false
+	}
+	state.turn++
+	state.threadID = firstNonEmpty(state.threadID, sm.ThreadID)
+	state.speakerUserID = meID
+	if len(state.buddyUserIDs) == 0 {
+		state.buddyUserIDs = cleanStringList([]string{messageAuthorID(sm), meID})
+	}
+	return state, true
+}
+
+func buddyDiscussionStateFromMetadata(metadata map[string]any) *buddyThreadDiscussionState {
+	if metadata == nil {
+		return nil
+	}
+	raw, ok := metadata[buddyDiscussionMetadataKey].(map[string]any)
+	if !ok {
+		return nil
+	}
+	turn, _ := numberInt(raw["turn"])
+	maxTurns, _ := numberInt(raw["maxTurns"])
+	state := &buddyThreadDiscussionState{
+		rootMessageID: stringValue(raw["rootMessageId"]),
+		threadID:      stringValue(raw["threadId"]),
+		buddyUserIDs:  stringListValue(raw["buddyUserIds"]),
+		turn:          turn,
+		maxTurns:      maxTurns,
+		speakerUserID: stringValue(raw["speakerUserId"]),
+	}
+	if state.turn <= 0 {
+		state.turn = 1
+	}
+	if state.maxTurns <= 0 {
+		state.maxTurns = defaultBuddyDiscussionMaxTurns
+	}
+	state.buddyUserIDs = cleanStringList(state.buddyUserIDs)
+	return state
+}
+
+func buddyDiscussionMetadata(state *buddyThreadDiscussionState, speakerUserID string) map[string]any {
+	if state == nil {
+		return nil
+	}
+	buddyUserIDs := cleanStringList(state.buddyUserIDs)
+	if len(buddyUserIDs) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"rootMessageId": state.rootMessageID,
+		"threadId":      state.threadID,
+		"buddyUserIds":  buddyUserIDs,
+		"turn":          state.turn,
+		"maxTurns":      state.maxTurns,
+		"speakerUserId": firstNonEmpty(speakerUserID, state.speakerUserID),
+	}
+}
+
+func stringListValue(value any) []string {
+	switch v := value.(type) {
+	case []string:
+		return cleanStringList(v)
+	case []any:
+		values := make([]string, 0, len(v))
+		for _, item := range v {
+			values = append(values, stringValue(item))
+		}
+		return cleanStringList(values)
+	case string:
+		return cleanStringList(strings.FieldsFunc(v, func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\n' || r == '\t'
+		}))
+	default:
+		return nil
+	}
 }
 
 func otherBuddyUserIDs(buddyUserIDs []string, meID string) []string {
@@ -175,6 +324,10 @@ func canonicalBuddyMentionTokens(userIDs []string) []string {
 		tokens = append(tokens, "<@"+userID+">")
 	}
 	return tokens
+}
+
+func intString(value int) string {
+	return fmt.Sprintf("%d", value)
 }
 
 func firstReactionBuddyUserID(groups []shadowReactionGroup, emoji string, buddyUserIDs []string) string {
