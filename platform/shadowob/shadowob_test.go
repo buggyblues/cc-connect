@@ -804,6 +804,35 @@ func TestBuddyThreadTransientMentionIsIgnoredWhenMessageIsNotPersisted(t *testin
 	})
 }
 
+func TestThreadMentionPreviewWithoutBuddyMetadataIsConfirmedBeforeDispatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.me = shadowUser{ID: "bot-1", Username: "buddy"}
+	p.channels["ch1"] = channelRuntime{
+		ID:     "ch1",
+		Policy: shadowChannelPolicy{Listen: true, Reply: true},
+	}
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		t.Fatalf("thread mention preview should not dispatch before REST persistence: %#v", msg)
+	}
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "preview-msg-2",
+		ChannelID: "ch1",
+		ThreadID:  "thread-1",
+		AuthorID:  "buddy-2",
+		Content:   "<@bot-1> temporary preview without hydrated author metadata",
+		Metadata: map[string]any{
+			"mentions": []any{
+				map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
+			},
+		},
+	})
+}
+
 func TestBuddyThreadFollowupStopsAtDiscussionTurnLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

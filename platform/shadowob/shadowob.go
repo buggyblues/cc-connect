@@ -837,6 +837,19 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 		return
 	}
 
+	if sm.ThreadID != "" && mentionsMe && !hasTaskContext {
+		confirmed, ok := p.confirmPersistedThreadMention(ctx, sm)
+		if !ok {
+			return
+		}
+		sm = confirmed
+		mentionsMe = p.messageMentionsMe(sm)
+		if !mentionsMe {
+			slog.Debug("shadowob: ignoring persisted thread message without explicit mention", "channel_id", sm.ChannelID, "message_id", sm.ID)
+			return
+		}
+	}
+
 	isAuthorBuddy := messageAuthorIsBuddy(sm)
 	var threadBuddyDiscussion *buddyThreadDiscussionState
 	if isAuthorBuddy && !hasTaskContext {
@@ -848,16 +861,6 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 		if sm.ThreadID != "" {
 			if !mentionsMe {
 				slog.Debug("shadowob: ignoring Buddy thread message without explicit mention", "channel_id", sm.ChannelID, "message_id", sm.ID)
-				return
-			}
-			confirmed, ok := p.confirmPersistedBuddyThreadMessage(ctx, sm)
-			if !ok {
-				return
-			}
-			sm = confirmed
-			mentionsMe = p.messageMentionsMe(sm)
-			if !mentionsMe {
-				slog.Debug("shadowob: ignoring persisted Buddy thread message without explicit mention", "channel_id", sm.ChannelID, "message_id", sm.ID)
 				return
 			}
 			var allowed bool
@@ -1134,7 +1137,7 @@ func (p *Platform) shouldSkipMessage(sm shadowMessage) bool {
 	return false
 }
 
-func (p *Platform) confirmPersistedBuddyThreadMessage(ctx context.Context, sm shadowMessage) (shadowMessage, bool) {
+func (p *Platform) confirmPersistedThreadMention(ctx context.Context, sm shadowMessage) (shadowMessage, bool) {
 	if p.client == nil || sm.ID == "" {
 		return sm, true
 	}
@@ -1142,11 +1145,11 @@ func (p *Platform) confirmPersistedBuddyThreadMessage(ctx context.Context, sm sh
 	persisted, err := p.client.getMessage(reqCtx, sm.ID)
 	cancel()
 	if err != nil {
-		slog.Debug("shadowob: ignoring transient Buddy thread message that is not readable via REST", "channel_id", sm.ChannelID, "thread_id", sm.ThreadID, "message_id", sm.ID, "error", err)
+		slog.Debug("shadowob: ignoring transient thread mention that is not readable via REST", "channel_id", sm.ChannelID, "thread_id", sm.ThreadID, "message_id", sm.ID, "error", err)
 		return sm, false
 	}
 	if persisted == nil || persisted.ID == "" {
-		slog.Debug("shadowob: ignoring transient Buddy thread message with empty REST payload", "channel_id", sm.ChannelID, "thread_id", sm.ThreadID, "message_id", sm.ID)
+		slog.Debug("shadowob: ignoring transient thread mention with empty REST payload", "channel_id", sm.ChannelID, "thread_id", sm.ThreadID, "message_id", sm.ID)
 		return sm, false
 	}
 	return *persisted, true
