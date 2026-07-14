@@ -16055,7 +16055,10 @@ func (e *Engine) setupMemoryFile() (setupResult, string, error) {
 			return setupDisabled, baseName, nil
 		}
 		prefix := existingText[:idx]
-		if strings.HasSuffix(prefix, "\n") {
+		// Current writers insert a separator newline before the marker. Remove
+		// it only when the file already ended in a newline; a single newline may
+		// belong to a legacy file and must be preserved.
+		if strings.HasSuffix(prefix, "\n\n") {
 			prefix = strings.TrimSuffix(prefix, "\n")
 		}
 		if err := os.WriteFile(filePath, []byte(prefix), 0o644); err != nil {

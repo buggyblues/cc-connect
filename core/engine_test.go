@@ -7986,7 +7986,7 @@ func TestSetupMemoryFile_Idempotent(t *testing.T) {
 func TestSetupMemoryFile_DisabledRemovesOnlyManagedInstructions(t *testing.T) {
 	tmpDir := t.TempDir()
 	memFile := filepath.Join(tmpDir, "AGENTS.md")
-	original := "# Project instructions\n\nKeep this user-authored content."
+	original := "# Project instructions\n\nKeep this user-authored content.\n"
 	managed := original + "\n" + ccConnectInstructionMarker + "\n" + AgentSystemPrompt() + "\n"
 	if err := os.WriteFile(memFile, []byte(managed), 0o644); err != nil {
 		t.Fatalf("write memory file: %v", err)
@@ -8012,6 +8012,34 @@ func TestSetupMemoryFile_DisabledRemovesOnlyManagedInstructions(t *testing.T) {
 	result, _, err = e.setupMemoryFile()
 	if result != setupDisabled || err != nil {
 		t.Fatalf("second call: result = %d, want setupDisabled; err = %v", result, err)
+	}
+}
+
+func TestSetupMemoryFile_DisabledPreservesLegacyTrailingNewline(t *testing.T) {
+	tmpDir := t.TempDir()
+	memFile := filepath.Join(tmpDir, "AGENTS.md")
+	original := "# Existing instructions\n"
+	legacyManaged := original + ccConnectInstructionMarker + "\nlegacy instructions\n"
+	if err := os.WriteFile(memFile, []byte(legacyManaged), 0o644); err != nil {
+		t.Fatalf("write memory file: %v", err)
+	}
+
+	disabled := false
+	e := NewEngine("test", &stubMemoryAgent{
+		memFile:             memFile,
+		instructionsEnabled: &disabled,
+	}, []Platform{&stubPlatformEngine{n: "plain"}}, "", LangEnglish)
+
+	result, _, err := e.setupMemoryFile()
+	if result != setupRemoved || err != nil {
+		t.Fatalf("result = %d, want setupRemoved; err = %v", result, err)
+	}
+	content, err := os.ReadFile(memFile)
+	if err != nil {
+		t.Fatalf("read memory file: %v", err)
+	}
+	if string(content) != original {
+		t.Fatalf("content = %q, want original %q", string(content), original)
 	}
 }
 
