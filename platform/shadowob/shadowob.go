@@ -28,6 +28,9 @@ const (
 	maxReconnectDelay      = 30 * time.Second
 	defaultMediaMaxBytes   = 20 << 20
 	buddyDiscussionSeenTTL = 10 * time.Minute
+	buddyInboxTopicPrefix  = "shadow:buddy-inbox:"
+	channelRouteType       = "channel"
+	inboxRouteType         = "buddy-inbox"
 )
 
 var (
@@ -61,10 +64,18 @@ type previewHandle struct {
 }
 
 type channelRuntime struct {
-	ID       string
-	Name     string
-	ServerID string
-	Policy   shadowChannelPolicy
+	ID        string
+	Name      string
+	ServerID  string
+	Kind      string
+	Topic     string
+	IsPrivate bool
+	RouteType string
+	Policy    shadowChannelPolicy
+}
+
+func (r channelRuntime) isInbox() bool {
+	return r.RouteType == inboxRouteType || strings.HasPrefix(r.Topic, buddyInboxTopicPrefix)
 }
 
 type Platform struct {
@@ -289,6 +300,22 @@ func (p *Platform) addAgentConfigChannels(ctx context.Context) error {
 				continue
 			}
 			p.addChannel(ch.ID, ch.Name, server.ID, ch.Policy)
+			p.setChannelRoute(ch.ID, shadowChannel{
+				ID:        ch.ID,
+				Name:      ch.Name,
+				Type:      ch.Type,
+				Kind:      ch.Kind,
+				ServerID:  server.ID,
+				Topic:     ch.Topic,
+				IsPrivate: ch.IsPrivate,
+				RouteType: ch.RouteType,
+			})
+			// Older Shadow servers did not include route metadata in the remote
+			// config. Resolve it once so Buddy Inbox channels are still classified
+			// correctly during a rolling upgrade.
+			if ch.RouteType == "" && ch.Kind == "" && ch.Topic == "" {
+				p.resolveChannelName(ctx, ch.ID)
+			}
 		}
 	}
 	return nil
@@ -318,6 +345,7 @@ func (p *Platform) addServerChannels(ctx context.Context, serverID string) error
 	}
 	for _, ch := range channels {
 		p.addChannel(ch.ID, ch.Name, ch.ServerID, shadowChannelPolicy{Listen: true, Reply: true})
+		p.setChannelRoute(ch.ID, ch)
 	}
 	return nil
 }
@@ -327,7 +355,44 @@ func (p *Platform) addChannel(id, name, serverID string, policy shadowChannelPol
 		return
 	}
 	p.mu.Lock()
-	p.channels[id] = channelRuntime{ID: id, Name: name, ServerID: serverID, Policy: policy}
+	rt := p.channels[id]
+	rt.ID = id
+	rt.Name = firstNonEmpty(name, rt.Name)
+	rt.ServerID = firstNonEmpty(serverID, rt.ServerID)
+	rt.Policy = policy
+	p.channels[id] = rt
+	p.mu.Unlock()
+}
+
+func (p *Platform) setChannelRoute(channelID string, ch shadowChannel) {
+	if channelID == "" {
+		return
+	}
+	if strings.EqualFold(ch.Kind, "dm") {
+		p.mu.Lock()
+		delete(p.channels, channelID)
+		p.dmChannels[channelID] = true
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Lock()
+	rt, ok := p.channels[channelID]
+	if ok {
+		rt.Name = firstNonEmpty(ch.Name, rt.Name)
+		rt.ServerID = firstNonEmpty(ch.ServerID, rt.ServerID)
+		rt.Kind = firstNonEmpty(ch.Kind, rt.Kind)
+		rt.Topic = firstNonEmpty(ch.Topic, rt.Topic)
+		rt.IsPrivate = ch.IsPrivate
+		rt.RouteType = firstNonEmpty(ch.RouteType, rt.RouteType)
+		if rt.RouteType == "" {
+			if strings.HasPrefix(rt.Topic, buddyInboxTopicPrefix) {
+				rt.RouteType = inboxRouteType
+			} else {
+				rt.RouteType = channelRouteType
+			}
+		}
+		p.channels[channelID] = rt
+	}
 	p.mu.Unlock()
 }
 
@@ -339,12 +404,7 @@ func (p *Platform) resolveChannelName(ctx context.Context, channelID string) {
 		slog.Debug("shadowob: resolve channel failed", "channel_id", channelID, "error", err)
 		return
 	}
-	p.mu.Lock()
-	rt := p.channels[channelID]
-	rt.Name = ch.Name
-	rt.ServerID = ch.ServerID
-	p.channels[channelID] = rt
-	p.mu.Unlock()
+	p.setChannelRoute(channelID, *ch)
 }
 
 func (p *Platform) addDM(id string) {
@@ -496,7 +556,7 @@ func (p *Platform) handleSocketEvent(ctx context.Context, ev socketEvent) {
 			slog.Warn("shadowob: decode message:new failed", "error", err)
 			return
 		}
-		if p.isDMMessage(msg) {
+		if p.isDMMessage(msg) || p.resolveUnknownDM(ctx, msg) {
 			p.handleDMMessage(ctx, msg)
 			return
 		}
@@ -549,6 +609,31 @@ func (p *Platform) isDMMessage(sm shadowMessage) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.dmChannels[sm.ChannelID]
+}
+
+func (p *Platform) resolveUnknownDM(ctx context.Context, sm shadowMessage) bool {
+	if sm.ChannelID == "" || p.client == nil {
+		return false
+	}
+	p.mu.RLock()
+	_, knownChannel := p.channels[sm.ChannelID]
+	_, knownDM := p.dmChannels[sm.ChannelID]
+	p.mu.RUnlock()
+	if knownChannel || knownDM {
+		return knownDM
+	}
+	reqCtx, cancel := requestContext(ctx)
+	ch, err := p.client.getChannel(reqCtx, sm.ChannelID)
+	cancel()
+	if err != nil {
+		slog.Debug("shadowob: resolve unknown message channel failed", "channel_id", sm.ChannelID, "error", err)
+		return false
+	}
+	if !strings.EqualFold(ch.Kind, "dm") {
+		return false
+	}
+	p.addDM(sm.ChannelID)
+	return true
 }
 
 func (p *Platform) handlePolicyChanged(data json.RawMessage) {
@@ -793,7 +878,8 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 	rt, known := p.channels[sm.ChannelID]
 	buddyUserID := p.me.ID
 	p.mu.RUnlock()
-	if !known && len(p.configChannelIDs) > 0 {
+	if !known {
+		slog.Debug("shadowob: ignoring message for an unconfigured channel", "channel_id", sm.ChannelID, "message_id", sm.ID)
 		return
 	}
 	if p.shouldSkipMessage(sm) {
@@ -803,6 +889,7 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 		return
 	}
 	mentionsMe := p.messageMentionsMe(sm)
+	isInbox := rt.isInbox()
 	taskCard := runtimeTaskCardForSelf(sm, buddyUserID, p.agentID)
 	var taskBinding *taskThreadBinding
 	if taskCard != nil {
@@ -831,11 +918,15 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 		}
 	}
 	hasTaskContext := taskCard != nil || taskBinding != nil
-	if rt.Policy.Listen && rt.Policy.Reply == false && !mentionsMe && !hasTaskContext {
+	if !rt.Policy.Listen {
+		slog.Debug("shadowob: ignoring disabled channel", "channel_id", sm.ChannelID, "message_id", sm.ID)
+		return
+	}
+	if !rt.Policy.Reply && !mentionsMe && !hasTaskContext {
 		slog.Debug("shadowob: ignoring no-reply policy message", "channel_id", sm.ChannelID, "message_id", sm.ID)
 		return
 	}
-	if rt.Policy.MentionOnly && !mentionsMe && !hasTaskContext && sm.ThreadID == "" {
+	if !isInbox && rt.Policy.MentionOnly && !mentionsMe && !hasTaskContext && sm.ThreadID == "" {
 		slog.Debug("shadowob: ignoring unmentioned message", "channel_id", sm.ChannelID, "message_id", sm.ID)
 		return
 	}
@@ -851,7 +942,7 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 
 	isAuthorBuddy := messageAuthorIsBuddy(sm)
 	var threadBuddyDiscussion *buddyThreadDiscussionState
-	if isAuthorBuddy && !hasTaskContext {
+	if !isInbox && isAuthorBuddy && !hasTaskContext {
 		replyToBuddy := policyConfigBool(rt.Policy.Config, "replyToBuddy", false)
 		if !replyToBuddy && sm.ThreadID == "" {
 			slog.Debug("shadowob: ignoring Buddy main-channel message because replyToBuddy=false", "channel_id", sm.ChannelID, "message_id", sm.ID)
@@ -878,17 +969,21 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 			return
 		}
 	}
-	if !isAuthorBuddy && messageMentionsAnyBuddy(sm) && !mentionsMe && !hasTaskContext {
+	if !isInbox && !isAuthorBuddy && messageMentionsAnyBuddy(sm) && !mentionsMe && !hasTaskContext {
 		slog.Debug("shadowob: ignoring message that targets other Buddies", "channel_id", sm.ChannelID, "message_id", sm.ID)
 		return
 	}
 
-	coordination, ok := p.coordinateBuddyThread(ctx, sm, rt.Policy.Config)
-	if !ok {
-		return
-	}
-	if coordination != nil {
-		sm.ThreadID = coordination.threadID
+	var coordination *buddyThreadCoordination
+	if !isInbox {
+		var ok bool
+		coordination, ok = p.coordinateBuddyThread(ctx, sm, rt.Policy.Config)
+		if !ok {
+			return
+		}
+		if coordination != nil {
+			sm.ThreadID = coordination.threadID
+		}
 	}
 
 	if p.handleLocalSlashPrompt(ctx, sm, false) {
@@ -899,7 +994,7 @@ func (p *Platform) handleChannelMessage(ctx context.Context, sm shadowMessage) {
 	} else if taskBinding != nil {
 		sm.Content = formatTaskThreadPrompt(sm.Content, *taskBinding)
 	}
-	threadBuddyFollowup := isAuthorBuddy && sm.ThreadID != "" && mentionsMe && !hasTaskContext
+	threadBuddyFollowup := !isInbox && isAuthorBuddy && sm.ThreadID != "" && mentionsMe && !hasTaskContext
 	msg := p.toCoreMessage(ctx, sm, false, rt, coordination, taskBinding, threadBuddyFollowup, threadBuddyDiscussion)
 	if msg == nil {
 		return

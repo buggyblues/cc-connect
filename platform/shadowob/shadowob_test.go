@@ -249,6 +249,134 @@ func TestMessageNewForKnownDMDispatchesAsDM(t *testing.T) {
 	}
 }
 
+func TestMessageNewForNewDMResolvesChannelKindAndDispatchesAsDM(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/channels/dm-new" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(shadowChannel{
+			ID:        "dm-new",
+			Name:      "Direct Message",
+			Type:      "text",
+			Kind:      "dm",
+			IsPrivate: true,
+		})
+	}))
+	defer server.Close()
+
+	platform, err := New(map[string]any{"token": "tok", "allow_from": "*"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := platform.(*Platform)
+	p.client = newShadowClient(server.URL, "tok")
+
+	var got *core.Message
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got = msg
+	}
+	p.handleSocketEvent(context.Background(), socketEvent{
+		Name: "message:new",
+		Data: []byte(`{"id":"m-new","channelId":"dm-new","authorId":"u1","content":"hello"}`),
+	})
+
+	if got == nil {
+		t.Fatal("expected newly created DM to dispatch")
+	}
+	if got.ChannelKey != "shadowob:dm:dm-new" || got.ChatName != "Shadow DM" {
+		t.Fatalf("got channel key/chat = %q/%q", got.ChannelKey, got.ChatName)
+	}
+	if !p.isDMMessage(shadowMessage{ChannelID: "dm-new"}) {
+		t.Fatal("resolved DM route was not cached")
+	}
+}
+
+func TestAgentConfigClassifiesBuddyInboxRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/agents/agent-1/config" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"servers": []any{map[string]any{
+				"id": "server-1",
+				"channels": []any{map[string]any{
+					"id":        "inbox-1",
+					"name":      "Inbox",
+					"type":      "text",
+					"kind":      "server",
+					"topic":     "shadow:buddy-inbox:agent-1",
+					"isPrivate": true,
+					"routeType": "buddy-inbox",
+					"policy": map[string]any{
+						"listen":      true,
+						"reply":       true,
+						"mentionOnly": true,
+					},
+				}},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	p := newShadowOBTestPlatform(t, server.URL)
+	p.agentID = "agent-1"
+	if err := p.addAgentConfigChannels(context.Background()); err != nil {
+		t.Fatalf("addAgentConfigChannels: %v", err)
+	}
+	rt, ok := p.channels["inbox-1"]
+	if !ok || !rt.isInbox() || rt.Kind != "server" || !rt.IsPrivate {
+		t.Fatalf("inbox route = %#v", rt)
+	}
+}
+
+func TestInboxMessageBypassesBuddyCollaborationCoordination(t *testing.T) {
+	p := newShadowOBTestPlatform(t, "https://shadow.example.com")
+	p.me = shadowUser{ID: "bot-1", Username: "buddy"}
+	p.channels["inbox-1"] = channelRuntime{
+		ID:        "inbox-1",
+		Name:      "Inbox",
+		Kind:      "server",
+		Topic:     "shadow:buddy-inbox:agent-1",
+		IsPrivate: true,
+		RouteType: inboxRouteType,
+		Policy: shadowChannelPolicy{
+			Listen:      true,
+			Reply:       true,
+			MentionOnly: true,
+		},
+	}
+
+	var got *core.Message
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got = msg
+	}
+	p.handleChannelMessage(context.Background(), shadowMessage{
+		ID:        "inbox-message-1",
+		ChannelID: "inbox-1",
+		AuthorID:  "human-1",
+		Content:   "Please review this <@bot-1> with <@bot-2>.",
+		Author:    &shadowAuthor{ID: "human-1", Username: "alice"},
+		Metadata: map[string]any{
+			"mentions": []any{
+				map[string]any{"kind": "buddy", "userId": "bot-1", "targetId": "bot-1", "username": "buddy"},
+				map[string]any{"kind": "buddy", "userId": "bot-2", "targetId": "bot-2", "username": "other-buddy"},
+			},
+		},
+	})
+
+	if got == nil {
+		t.Fatal("expected Inbox message to dispatch directly")
+	}
+	if got.ChannelKey != "shadowob:channel:inbox-1" {
+		t.Fatalf("Inbox channel key = %q", got.ChannelKey)
+	}
+	if strings.Contains(got.ExtraContent, "multi-Buddy") {
+		t.Fatalf("Inbox message entered channel collaboration path: %q", got.ExtraContent)
+	}
+}
+
 func TestMessageNewSkipsOwnBotMessages(t *testing.T) {
 	platform, err := New(map[string]any{"token": "tok", "allow_from": "*"})
 	if err != nil {

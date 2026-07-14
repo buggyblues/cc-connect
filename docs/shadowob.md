@@ -29,7 +29,7 @@ allow_from = "*"
 server_url = "https://shadow.example.com"
 ```
 
-Server and channel routing is read from the Buddy policy via `/api/agents/:id/config`. cc-connect also tracks Shadow policy change events and joins newly enabled channels without requiring channel IDs in `config.toml`.
+Server and channel routing is read from the Buddy policy via `/api/agents/:id/config`. Current Shadow servers explicitly label each route as `channel` or `buddy-inbox`; cc-connect also falls back to the channel topic during rolling upgrades. Direct-message events are classified from `kind=dm`, including a DM first created after cc-connect started. cc-connect also tracks Shadow policy change events and joins newly enabled channels without requiring channel IDs in `config.toml`.
 
 ## Options
 
@@ -48,6 +48,8 @@ Server and channel routing is read from the Buddy policy via `/api/agents/:id/co
 
 Channel auto-replies use Shadow's normal message primitives: structured mentions,
 threads, and reactions. There is no claim/turn API in the cc-connect adapter.
+DM and Buddy Inbox messages bypass this collaboration path entirely; they never
+call or depend on `/api/buddy-collaborations/claim`.
 
 | Trigger | Local candidate rule | Delivery |
 | --- | --- | --- |

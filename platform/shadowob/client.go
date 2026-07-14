@@ -71,8 +71,12 @@ type shadowChannel struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Type        string `json:"type"`
+	Kind        string `json:"kind,omitempty"`
 	ServerID    string `json:"serverId"`
 	Description string `json:"description,omitempty"`
+	Topic       string `json:"topic,omitempty"`
+	IsPrivate   bool   `json:"isPrivate,omitempty"`
+	RouteType   string `json:"routeType,omitempty"`
 }
 
 type shadowServer struct {
@@ -95,9 +99,14 @@ type shadowRemoteConfig struct {
 		Name     string `json:"name"`
 		Slug     string `json:"slug"`
 		Channels []struct {
-			ID     string              `json:"id"`
-			Name   string              `json:"name"`
-			Policy shadowChannelPolicy `json:"policy"`
+			ID        string              `json:"id"`
+			Name      string              `json:"name"`
+			Type      string              `json:"type,omitempty"`
+			Kind      string              `json:"kind,omitempty"`
+			Topic     string              `json:"topic,omitempty"`
+			IsPrivate bool                `json:"isPrivate,omitempty"`
+			RouteType string              `json:"routeType,omitempty"`
+			Policy    shadowChannelPolicy `json:"policy"`
 		} `json:"channels"`
 	} `json:"servers"`
 }
