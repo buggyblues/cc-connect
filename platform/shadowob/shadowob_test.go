@@ -739,6 +739,10 @@ func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
 	if !strings.Contains(got[0].Content, "[Shadow Inbox task]") {
 		t.Fatalf("missing task prompt: %q", got[0].Content)
 	}
+	if !strings.Contains(got[0].Content, "Reply with the task result normally") ||
+		!strings.Contains(got[0].Content, "Do not call the Shadow CLI/API, browser, or shell") {
+		t.Fatalf("task prompt must keep routing and status actions inside cc-connect: %q", got[0].Content)
+	}
 	rc, ok := got[0].ReplyCtx.(replyContext)
 	if !ok {
 		t.Fatalf("reply context type = %T", got[0].ReplyCtx)
@@ -774,6 +778,10 @@ func TestTaskCardDispatchesAndThreadCommentReusesTaskSession(t *testing.T) {
 	if !strings.Contains(got[1].Content, "[Shadow Inbox task thread comment]") ||
 		!strings.Contains(got[1].Content, "Please answer FOLLOWUP.") {
 		t.Fatalf("missing task thread prompt: %q", got[1].Content)
+	}
+	if !strings.Contains(got[1].Content, "Reply normally; cc-connect automatically delivers") ||
+		!strings.Contains(got[1].Content, "Do not call the Shadow CLI/API, browser, or shell") {
+		t.Fatalf("task thread prompt must keep routing and status actions inside cc-connect: %q", got[1].Content)
 	}
 	threadRC, ok := got[1].ReplyCtx.(replyContext)
 	if !ok {

@@ -4,6 +4,7 @@
 
 ### Fixed
 - **Codex instruction isolation**: add `inject_cc_connect_instructions = false` for deployments that must preserve native Codex behavior. When disabled, startup removes only cc-connect's previously generated marker block from the project `AGENTS.md` and leaves user-authored instructions untouched.
+- **Shadow Inbox task delivery**: tell the agent at runtime to reply normally because cc-connect already owns task claim/status and thread routing. This prevents native Codex from invoking the Shadow CLI for a simple task reply when persistent cc-connect instructions are disabled.
 
 ### Added
 - **`agent_session_idle_timeout_mins`**: new per-project config option that closes an idle live agent process after a clean turn while preserving the cc-connect session and saved agent session ID. The next message starts a new agent process and resumes the same conversation. Set to `0` or leave unset to disable (#1338).

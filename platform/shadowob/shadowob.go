@@ -759,8 +759,9 @@ func formatTaskCardPrompt(content string, sm shadowMessage, card map[string]any)
 	}
 	lines = append(lines,
 		"",
-		"Send ordinary task discussion replies to the Shadow task thread.",
-		"Do not change the task status unless the human explicitly asks you to update it.",
+		"Reply with the task result normally; cc-connect automatically delivers your response to the Shadow task thread.",
+		"cc-connect already claimed this task, marked it running, and will mark it completed after your reply.",
+		"Do not call the Shadow CLI/API, browser, or shell for reply routing or task status updates.",
 	)
 	if body != "" {
 		lines = append(lines, "", body)
@@ -781,8 +782,8 @@ func formatTaskThreadPrompt(content string, binding taskThreadBinding) string {
 		"Task title: " + title,
 		"Task message id: " + binding.messageID,
 		"Task card id: " + binding.cardID,
-		"Reply as an ordinary discussion message in this same task thread.",
-		"Do not change the task status unless the human explicitly asks you to update it.",
+		"Reply normally; cc-connect automatically delivers your response to this same task thread.",
+		"Do not call the Shadow CLI/API, browser, or shell for reply routing or task status updates.",
 	}
 	if trimmed := strings.TrimSpace(content); trimmed != "" {
 		lines = append(lines, "", trimmed)
