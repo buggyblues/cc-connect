@@ -7923,11 +7923,15 @@ func TestSplitMessageUTF8Safety(t *testing.T) {
 
 type stubMemoryAgent struct {
 	stubAgent
-	memFile string
+	memFile             string
+	instructionsEnabled *bool
 }
 
 func (a *stubMemoryAgent) ProjectMemoryFile() string { return a.memFile }
 func (a *stubMemoryAgent) GlobalMemoryFile() string  { return "" }
+func (a *stubMemoryAgent) CCConnectInstructionsEnabled() bool {
+	return a.instructionsEnabled == nil || *a.instructionsEnabled
+}
 
 type stubNativePromptAgent struct {
 	stubAgent
@@ -7976,6 +7980,38 @@ func TestSetupMemoryFile_Idempotent(t *testing.T) {
 	r2, _, _ := e.setupMemoryFile()
 	if r2 != setupExists {
 		t.Fatalf("second call: result = %d, want setupExists", r2)
+	}
+}
+
+func TestSetupMemoryFile_DisabledRemovesOnlyManagedInstructions(t *testing.T) {
+	tmpDir := t.TempDir()
+	memFile := filepath.Join(tmpDir, "AGENTS.md")
+	original := "# Project instructions\n\nKeep this user-authored content."
+	managed := original + "\n" + ccConnectInstructionMarker + "\n" + AgentSystemPrompt() + "\n"
+	if err := os.WriteFile(memFile, []byte(managed), 0o644); err != nil {
+		t.Fatalf("write memory file: %v", err)
+	}
+
+	disabled := false
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubMemoryAgent{memFile: memFile, instructionsEnabled: &disabled}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	result, _, err := e.setupMemoryFile()
+	if result != setupRemoved {
+		t.Fatalf("result = %d, want setupRemoved; err = %v", result, err)
+	}
+	content, err := os.ReadFile(memFile)
+	if err != nil {
+		t.Fatalf("read memory file: %v", err)
+	}
+	if string(content) != original {
+		t.Fatalf("content = %q, want original %q", string(content), original)
+	}
+
+	result, _, err = e.setupMemoryFile()
+	if result != setupDisabled || err != nil {
+		t.Fatalf("second call: result = %d, want setupDisabled; err = %v", result, err)
 	}
 }
 

@@ -239,6 +239,13 @@ type SystemPromptSupporter interface {
 	HasSystemPromptSupport() bool
 }
 
+// CCConnectInstructionConfigurer allows an agent adapter to opt out of the
+// built-in cc-connect instruction block. The default remains enabled for
+// adapters that do not implement this interface.
+type CCConnectInstructionConfigurer interface {
+	CCConnectInstructionsEnabled() bool
+}
+
 // SessionIDValidator is an optional interface for agents that can validate
 // whether a stored session ID actually belongs to the current project's
 // session store. The engine uses this to prevent cross-project session

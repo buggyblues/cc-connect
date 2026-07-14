@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **Codex instruction isolation**: add `inject_cc_connect_instructions = false` for deployments that must preserve native Codex behavior. When disabled, startup removes only cc-connect's previously generated marker block from the project `AGENTS.md` and leaves user-authored instructions untouched.
+
 ### Added
 - **`agent_session_idle_timeout_mins`**: new per-project config option that closes an idle live agent process after a clean turn while preserving the cc-connect session and saved agent session ID. The next message starts a new agent process and resumes the same conversation. Set to `0` or leave unset to disable (#1338).
 - **Reasonix agent**: new agent adapter for Reasonix multi-model coding agent, bridging via HTTP serve API (POST /submit, SSE /events, POST /approve). Supports default/yolo/plan permission modes, SSE auto-reconnect with backoff, and thinking accumulator. (#1281)

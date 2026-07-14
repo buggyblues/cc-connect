@@ -33,22 +33,23 @@ func init() {
 //   - "full-auto": --sandbox workspace-write + approval_policy=never
 //   - "yolo":      --dangerously-bypass-approvals-and-sandbox
 type Agent struct {
-	workDir         string
-	model           string
-	reasoningEffort string
-	mode            string // "suggest" | "auto-edit" | "full-auto" | "yolo"
-	backend         string // "exec" | "app_server"
-	appServerURL    string
-	codexHome       string
-	systemPrompt    string
-	appendPrompt    string
-	cmd             string   // CLI binary name, default "codex"
-	cliExtraArgs    []string // extra args parsed from cmd after the binary
-	providers       []core.ProviderConfig
-	activeIdx       int      // -1 = no provider set
-	configEnv       []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
-	sessionEnv      []string
-	mu              sync.RWMutex
+	workDir                     string
+	model                       string
+	reasoningEffort             string
+	mode                        string // "suggest" | "auto-edit" | "full-auto" | "yolo"
+	backend                     string // "exec" | "app_server"
+	appServerURL                string
+	codexHome                   string
+	systemPrompt                string
+	appendPrompt                string
+	injectCCConnectInstructions bool
+	cmd                         string   // CLI binary name, default "codex"
+	cliExtraArgs                []string // extra args parsed from cmd after the binary
+	providers                   []core.ProviderConfig
+	activeIdx                   int      // -1 = no provider set
+	configEnv                   []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
+	sessionEnv                  []string
+	mu                          sync.RWMutex
 }
 
 func New(opts map[string]any) (core.Agent, error) {
@@ -64,6 +65,10 @@ func New(opts map[string]any) (core.Agent, error) {
 	codexHome, _ := opts["codex_home"].(string)
 	systemPrompt, _ := opts["system_prompt"].(string)
 	appendPrompt, _ := opts["append_system_prompt"].(string)
+	injectCCConnectInstructions := true
+	if configured, ok := opts["inject_cc_connect_instructions"].(bool); ok {
+		injectCCConnectInstructions = configured
+	}
 	mode = normalizeMode(mode)
 	backend = normalizeBackend(backend)
 	appServerURL = normalizeAppServerURL(appServerURL)
@@ -92,20 +97,29 @@ func New(opts map[string]any) (core.Agent, error) {
 	}
 
 	return &Agent{
-		workDir:         workDir,
-		model:           model,
-		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
-		mode:            mode,
-		backend:         backend,
-		appServerURL:    appServerURL,
-		codexHome:       strings.TrimSpace(codexHome),
-		systemPrompt:    strings.TrimSpace(systemPrompt),
-		appendPrompt:    strings.TrimSpace(appendPrompt),
-		cmd:             cmd,
-		cliExtraArgs:    cliExtraArgs,
-		configEnv:       configEnv,
-		activeIdx:       -1,
+		workDir:                     workDir,
+		model:                       model,
+		reasoningEffort:             normalizeReasoningEffort(reasoningEffort),
+		mode:                        mode,
+		backend:                     backend,
+		appServerURL:                appServerURL,
+		codexHome:                   strings.TrimSpace(codexHome),
+		systemPrompt:                strings.TrimSpace(systemPrompt),
+		appendPrompt:                strings.TrimSpace(appendPrompt),
+		injectCCConnectInstructions: injectCCConnectInstructions,
+		cmd:                         cmd,
+		cliExtraArgs:                cliExtraArgs,
+		configEnv:                   configEnv,
+		activeIdx:                   -1,
 	}, nil
+}
+
+// CCConnectInstructionsEnabled reports whether the engine may manage its
+// instruction block in this Codex project's AGENTS.md file.
+func (a *Agent) CCConnectInstructionsEnabled() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.injectCCConnectInstructions
 }
 
 func normalizeBackend(raw string) string {
@@ -311,7 +325,6 @@ func readCodexCachedModels() []core.ModelOption {
 	return parseCodexModelsJSON(b)
 }
 
-
 // parseCodexModelsJSON parses a Codex models JSON file (model_catalog.json
 // or models_cache.json) into a deduplicated, filtered slice of ModelOption.
 // It is shared by readCodexCachedModels and readCodexModelCatalog.
@@ -356,7 +369,6 @@ func parseCodexModelsJSON(data []byte) []core.ModelOption {
 	}
 	return models
 }
-
 
 // readCodexModelCatalog reads $CODEX_HOME/config.toml to find the
 // model_catalog_json setting, then reads and parses that JSON file.

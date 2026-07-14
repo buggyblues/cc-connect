@@ -16,7 +16,7 @@ func TestNew_ParsesProjectEnvFromOpts(t *testing.T) {
 	// to be installed on the test runner.
 	opts := map[string]any{
 		"work_dir": t.TempDir(),
-		"cmd": "go",
+		"cmd":      "go",
 		"env": map[string]string{
 			"HTTPS_PROXY": "http://127.0.0.1:10808",
 			"HTTP_PROXY":  "http://127.0.0.1:10808",
@@ -50,7 +50,7 @@ func TestNew_ParsesProjectEnvFromOpts(t *testing.T) {
 func TestNew_ParsesProjectEnvFromMapStringAny(t *testing.T) {
 	opts := map[string]any{
 		"work_dir": t.TempDir(),
-		"cmd": "go",
+		"cmd":      "go",
 		"env": map[string]any{
 			"OPENAI_BASE_URL": "https://api.example.com/v1",
 			"CUSTOM_FLAG":     "yes",
@@ -80,7 +80,7 @@ func TestNew_ParsesProjectEnvFromMapStringAny(t *testing.T) {
 func TestNew_NoEnvOpts(t *testing.T) {
 	opts := map[string]any{
 		"work_dir": t.TempDir(),
-		"cmd": "go",
+		"cmd":      "go",
 	}
 
 	a, err := New(opts)
@@ -119,5 +119,21 @@ func TestNew_ParsesProjectPromptsFromOpts(t *testing.T) {
 	}
 	if agent.appendPrompt != "Always use linear-bug-intake." {
 		t.Fatalf("appendPrompt = %q", agent.appendPrompt)
+	}
+}
+
+func TestNew_CanDisableCCConnectInstructionInjection(t *testing.T) {
+	a, err := New(map[string]any{
+		"work_dir":                       t.TempDir(),
+		"cli_path":                       "go",
+		"inject_cc_connect_instructions": false,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	agent := a.(*Agent)
+	if agent.CCConnectInstructionsEnabled() {
+		t.Fatal("expected cc-connect instruction injection to be disabled")
 	}
 }

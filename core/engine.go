@@ -2286,7 +2286,9 @@ func (e *Engine) ensureAgentInstructions() {
 	switch result {
 	case setupOK:
 		slog.Info("cc-connect instructions written", "project", e.name, "file", baseName)
-	case setupExists, setupNative, setupNoMemory:
+	case setupRemoved:
+		slog.Info("cc-connect instructions removed", "project", e.name, "file", baseName)
+	case setupExists, setupDisabled, setupNative, setupNoMemory:
 		return
 	case setupError:
 		slog.Warn("cc-connect instructions setup failed", "project", e.name, "file", baseName, "error", err)
@@ -14071,6 +14073,10 @@ func (e *Engine) cmdCronMute(p Platform, msg *Message, args []string, mute bool)
 func (e *Engine) cmdCronSetup(p Platform, msg *Message) {
 	result, baseName, err := e.setupMemoryFile()
 	switch result {
+	case setupDisabled:
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSetupDisabled))
+	case setupRemoved:
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgSetupRemoved), baseName))
 	case setupNative:
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSetupNative))
 	case setupNoMemory:
@@ -16016,14 +16022,48 @@ type setupResult int
 const (
 	setupOK       setupResult = iota // instructions written successfully
 	setupExists                      // instructions already present
+	setupDisabled                    // instruction injection is disabled
+	setupRemoved                     // a stale managed instruction block was removed
 	setupNative                      // agent supports system prompt natively
 	setupNoMemory                    // agent has no memory file support
 	setupError                       // write error
 )
 
-// setupMemoryFile appends AgentSystemPrompt() to the agent's project memory
-// file. It returns the result, the filename (for messages), and any error.
+// setupMemoryFile manages AgentSystemPrompt() in the agent's project memory
+// file. Disabled adapters remove only the previously managed marker block.
+// It returns the result, the filename (for messages), and any error.
 func (e *Engine) setupMemoryFile() (setupResult, string, error) {
+	if configurable, ok := e.agent.(CCConnectInstructionConfigurer); ok && !configurable.CCConnectInstructionsEnabled() {
+		mp, ok := e.agent.(MemoryFileProvider)
+		if !ok || mp.ProjectMemoryFile() == "" {
+			return setupDisabled, "", nil
+		}
+
+		filePath := mp.ProjectMemoryFile()
+		baseName := filepath.Base(filePath)
+		existing, err := os.ReadFile(filePath)
+		if errors.Is(err, os.ErrNotExist) {
+			return setupDisabled, baseName, nil
+		}
+		if err != nil {
+			return setupError, baseName, err
+		}
+
+		existingText := string(existing)
+		idx := strings.Index(existingText, ccConnectInstructionMarker)
+		if idx < 0 {
+			return setupDisabled, baseName, nil
+		}
+		prefix := existingText[:idx]
+		if strings.HasSuffix(prefix, "\n") {
+			prefix = strings.TrimSuffix(prefix, "\n")
+		}
+		if err := os.WriteFile(filePath, []byte(prefix), 0o644); err != nil {
+			return setupError, baseName, err
+		}
+		return setupRemoved, baseName, nil
+	}
+
 	if _, ok := e.agent.(SystemPromptSupporter); ok {
 		return setupNative, "", nil
 	}
@@ -16074,6 +16114,10 @@ func (e *Engine) setupMemoryFile() (setupResult, string, error) {
 func (e *Engine) cmdBindSetup(p Platform, msg *Message) {
 	result, baseName, err := e.setupMemoryFile()
 	switch result {
+	case setupDisabled:
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSetupDisabled))
+	case setupRemoved:
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgSetupRemoved), baseName))
 	case setupNative:
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSetupNative))
 	case setupNoMemory:

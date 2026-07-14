@@ -23,6 +23,21 @@ token = "${SHADOWOB_AGENT_TOKEN}"
 allow_from = "*"
 ```
 
+When Shadow should run Codex with its native configuration and leave the
+project `AGENTS.md` untouched, disable cc-connect's managed instruction block:
+
+```toml
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "/path/to/project"
+inject_cc_connect_instructions = false
+```
+
+On the next start, cc-connect removes only a previously generated
+`<!-- cc-connect-instructions -->` block and preserves everything before it.
+
 `server_url` defaults to `https://shadowob.com`. For a private or self-hosted Shadow instance, override it:
 
 ```toml
