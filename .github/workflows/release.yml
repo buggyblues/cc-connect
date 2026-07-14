@@ -67,6 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
+          TARGET: ${{ steps.release.outputs.target }}
           PRERELEASE: ${{ steps.release.outputs.prerelease }}
         shell: bash
         run: |
@@ -94,6 +95,7 @@ jobs:
               dist/cc-connect-"$TAG"-windows-arm64.zip \
               dist/checksums.txt \
               --title "$TAG" \
+              --target "$TARGET" \
               --generate-notes \
               "${prerelease_flag[@]}"
           fi
